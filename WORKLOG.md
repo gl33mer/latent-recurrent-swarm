@@ -173,3 +173,18 @@ Charter: `latent_phase2b.md` (pulled from remote commit `eb0b85b`). Local == rem
    `--help` works, behaviour without flag unchanged.
 5. Reproducibility rerun executed under a new UTC run ID (see CHANGELOG + run dir); result
    recorded below after the run.
+
+### Phase 2a reproducibility rerun outcome (run `20261016T215726Z`)
+
+- Source: `v7.1-baseline` (`9f94151`) + artifact-capture option (commit `d450847`, verified
+  non-computational). Seeds 42/1337/9999; training seed 42; ~2 m 16 s wall.
+- **Result: exact reproduction.** Every validation and test metric matches the historical
+  first run to the reported digit: validation connected 97.50%, quadrants 96.40/97.20/98.40/98.00%,
+  flip residuals 0.00%/0.41%, zero-message 48.60%, probe 97.80%/97.20%/98.40%; test connected
+  97.00%, quadrants 96.80/94.80/98.80/97.60%, flip 0.00%/0.00%, zero 50.50%, probe 97.10%/95.80%/98.40%.
+  Deterministic-seed training on the same CPU/torch build reproduced the run bit-comparably at
+  the reported precision. Historical report numbers left unchanged; this rerun is labelled a
+  reproduction artifact, not the original trained state (which was never saved).
+- Artifact: `runs/20261016T215726Z/checkpoint_phase2a.pt` (checksum in
+  `runs/20261016T215726Z/checkpoint_phase2a.sha256`), metadata `phase2a_metadata.json`,
+  full log `train_swarm_rerun.log`. All Git-ignored.

@@ -21,8 +21,12 @@ Branch `chore/preserve-v7.1-artifacts`; baseline source frozen at tag `v7.1-base
    `test_system.py` 7/7 pass, behaviour identical without the flag).
 4. A clearly-labelled **Phase 2a reproducibility rerun** (frozen source at
    `v7.1-baseline` + the artifact-capture option, same seeds 42/1337/9999, seed 42) was
-   executed under a new run ID; outcome recorded in `WORKLOG.md` and the run directory.
-   It is a reproduction artifact, not the original trained state.
+   executed under run ID `20261016T215726Z` and **reproduced every historical validation
+   and test metric exactly** (97.50% connected; 96.40/97.20/98.40/98.00% quadrants;
+   flip 0.00%/0.41%; zero 48.60%; probe 97.80%/97.20%/98.40%; test 97.00% connected and
+   matching subgroup metrics). Checkpoint SHA-256:
+   `05a163e23e240173fefcbb3a2c404abaa38db53bbbc18a4ca77191af8e693763`. It is labelled a
+   reproduction artifact, not the original trained state (which was never saved).
 
 ## 2026-10-16 — v7.1 baseline bootstrap (test-only/dependency hardening)
 
