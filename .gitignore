@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+checkpoint_phase1.pt
+checkpoint_phase1.pt.*
+runs/
+*.log
+.env
+.env.*
+!.env.example
+*.swp

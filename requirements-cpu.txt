@@ -1,0 +1,6 @@
+# Install CPU-only PyTorch separately using:
+# python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+pytest>=8.0
+
+# NumPy is required by canonical code (.numpy() in graph hashing and balancing test).
+numpy>=1.26
