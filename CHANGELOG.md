@@ -77,3 +77,11 @@ confound), adds exploratory paired validation arithmetic (mean +8.97 pp full-min
 final-only, n=3, descriptive only), and records artifact availability/checksums and the
 durable-archive location with its storage caveat. No historical numbers or run outcomes
 changed; original wording preserved with cross-reference.
+
+## 2026-10-16 — Phase 2b stability study (branch experiment/phase2b-stability-study)
+
+Predeclared design (`reports/phase2b-stability-design.md`) + new isolated instrumentation
+driver `experiments/stability/run_stability_sweep.py` (train/val only, per-epoch loss
+components, stratified validation metrics, per-group gradient norms, NaN/Inf checks,
+trajectory sensitivity, checkpoints saved for failed runs too). No change to model
+semantics, gates, or v7.1/Phase 2b code paths.

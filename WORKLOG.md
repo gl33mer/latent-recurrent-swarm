@@ -259,3 +259,19 @@ log/env snapshot; artifact save gated behind validation gates:
   +7.5 pp; mean +8.97, median +7.5; descriptive only, n=3, no paired seed passed all
   gates in both modes, test numbers not paired; (3) artifact/checksum table; (4)
   visibility metadata already correct on this branch (d450847); (5) no test-split reuse.
+
+## Phase B — stability study setup (branch experiment/phase2b-stability-study)
+
+- Branch created from Phase 2b branch (f701460). `reports/phase2b-stability-design.md`
+  predeclared and committed BEFORE any sweep outcome was viewed: LR grid {8e-4, 4e-4,
+  2e-4} x {full, final-only} x seeds {42,43,44} = 18 runs; frozen Phase 2b recipe
+  otherwise; train/val-only builder (test split never generated); paired init + batch
+  order via seeded DataLoader generator; gradient-norm/NaN instrumentation; last+periodic
+  checkpoints saved for every run including failures; 120-minute budget; explicit
+  common-LR eligibility rule (>=2/3 seeds pass all gates in EACH mode at the same rate,
+  finiteness, trajectory requirements, no new pathology) with tie-breaks; if none
+  eligible -> recipe "not yet stabilised" and Phase 2c limited to engineering smoke.
+- `experiments/stability/run_stability_sweep.py` implemented (no model semantics
+  changed; one dev-time script bug fixed after a 1-epoch sanity run: .detach() on loss
+  logging and a divide-by-zero guard for 1-epoch histories). Sanity run passed;
+  regression suite 18/18 after changes.
