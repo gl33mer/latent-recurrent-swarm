@@ -68,3 +68,12 @@ no thresholds altered. Trajectory diagnostics confirm recurrent bit-integration 
 mode and exact step-8-only influence in final-only mode. Training instability at the
 frozen v7.1 recipe documented as a finding; stabilisation and a message-conditioned task
 are proposed as separate follow-ups. See `reports/phase2b-run-report.md`.
+
+## 2026-10-16 — Phase 2b analysis addendum (stage 1 housekeeping)
+
+`reports/phase2b-analysis-addendum.md` added on `experiment/phase2b-comm-token`: corrects
+the over-strong causal claim about instability source (mechanism vs architecture
+confound), adds exploratory paired validation arithmetic (mean +8.97 pp full-minus-
+final-only, n=3, descriptive only), and records artifact availability/checksums and the
+durable-archive location with its storage caveat. No historical numbers or run outcomes
+changed; original wording preserved with cross-reference.

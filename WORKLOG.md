@@ -240,3 +240,22 @@ log/env snapshot; artifact save gated behind validation gates:
   tuning. No paired seed passed both modes → benchmark cannot discriminate full vs
   final-only access, as pre-declared in the design report.
 - Full details: `reports/phase2b-run-report.md`. Branch pushed; NOT merged to main.
+
+## Stage 0/1 audit & Phase 2b addendum (charter: latent_phase2b_stability_phase2c.md @ main 45029c7)
+
+- Audit: main=45029c7 (synced), experiment/phase2b-comm-token=d82f555 (pushed), tags
+  v7.1-pre-run/v7.1-baseline intact, repo public, working tree clean. All recorded
+  checkpoints present with matching SHA-256s (phase1 ef4514…, phase2a rerun 05a163…,
+  phase2b full/43 38c505…, final-only/42 79aada…). Regression suite on this branch:
+  18 passed (log in runs/20261016T225501Z_stage0_audit/).
+- Dated checksummed archive of all Phase 2b/2a/1 artifacts copied to
+  /workspace/latent-recurrent-swarm-archive/ (sha256 2e9c8d96…; no external durable
+  storage exists on this VM — single-volume caveat recorded).
+- `reports/phase2b-analysis-addendum.md` written: (1) causal-statement correction —
+  original "routing the message through the recurrent trajectory demonstrably
+  destabilises optimisation" overclaims; both modes share most architectural changes and
+  the experiment does not isolate the cause; corrected wording predeclared for future
+  summaries; (2) exploratory paired validation deltas: seed42 −8.0, seed43 +27.4, seed44
+  +7.5 pp; mean +8.97, median +7.5; descriptive only, n=3, no paired seed passed all
+  gates in both modes, test numbers not paired; (3) artifact/checksum table; (4)
+  visibility metadata already correct on this branch (d450847); (5) no test-split reuse.
