@@ -142,3 +142,34 @@ All times approximate UTC, 2026-10-16. Working directory: `/workspace/latent-rec
 | Run logs, env freeze, runtime/memory snapshots | `runs/20261016T211522Z/` | no (ignored) |
 | Checkpoint `checkpoint_phase1.pt` + SHA-256 | run dir + VM root | no (ignored) |
 | Virtual environment | `.venv/` | no (ignored) |
+
+---
+
+# Phase 2b Mission Log (continuation, 2026-10-16)
+
+Charter: `latent_phase2b.md` (pulled from remote commit `eb0b85b`). Local == remote at start.
+
+## Stage A — inspection findings
+
+- `main` = `origin/main` = `eb0b85b` ("Document Phase 2b COMM-Token experiment specifications");
+  working tree clean; tag `v7.1-pre-run` at `77c2d1a` intact; repo public (verified via API).
+- Environment reused (healthy): Debian 12, 4 vCPUs, ~8 GiB RAM, Python 3.11.2 in `.venv`,
+  torch 2.14.1+cpu (CUDA off), numpy 2.4.6, 4 intra-op threads. No reinstall performed.
+- `.venv/`, `runs/`, `checkpoint_phase1.pt` confirmed Git-ignored (`git check-ignore -v`).
+- Phase 1 checkpoint present at root and in `runs/20261016T211522Z/`; both hash to
+  `ef4514342b65e16f901774134d03a0c4db8f69fd38dccd56eda1dcf29e50049e` == recorded checksum.
+- **No Phase 2a checkpoint exists anywhere** (v7.1 `train_swarm.py` never saved one) →
+  labelled reproducibility rerun required (Stage B3).
+- `reports/first-run-report.md` still stated "private" → corrected (B1).
+- Baseline regression: `pytest -q test_system.py` → 7 passed (4.72 s) before any change.
+
+## Stage B — housekeeping actions
+
+1. Tagged frozen v7.1 source state as `v7.1-baseline` (commit `9f94151`); `v7.1-pre-run` untouched.
+2. Branch `chore/preserve-v7.1-artifacts` created from `main`.
+3. B1: `reports/first-run-report.md` visibility statement corrected (public + provenance note).
+4. B3: `train_swarm.py` gained optional `--artifact-dir` (post-gate-only checkpoint+metadata
+   save; no computation/RNG change). Verified: compileall clean, 7/7 baseline tests pass,
+   `--help` works, behaviour without flag unchanged.
+5. Reproducibility rerun executed under a new UTC run ID (see CHANGELOG + run dir); result
+   recorded below after the run.

@@ -10,7 +10,7 @@
 
 ## 2. Repository
 
-- URL: https://github.com/gl33mer/latent-recurrent-swarm (**private**, verified via API: `private: true`)
+- URL: https://github.com/gl33mer/latent-recurrent-swarm (**public** as of 2026-10-16; the run itself was performed while the repository was still private — visibility was changed to public at the owner's explicit request after this baseline run completed, see `CHANGELOG.md` and `WORKLOG.md`)
 - Branch: `main`
 - Pre-run source commit + tag: `77c2d1a` / `v7.1-pre-run` (source unchanged from canonical v7.1; only dependency/housekeeping deviations documented in `CHANGELOG.md`)
 - Report commit: see `git log` (this file's commit on `main`)
