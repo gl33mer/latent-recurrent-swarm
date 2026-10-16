@@ -327,6 +327,10 @@ log/env snapshot; artifact save gated behind validation gates:
 - Smoke runs (engineering-only, no research claims, no test data): primary full
   (step-1 |Δz| 9.26e-04), primary final-only (step-1 = 0.0 exactly), dual full (1.02e-03),
   dual final-only (0.0) — all losses finite, all grads flow. Logs in
-  runs/20261016T233732Z_phase2c_smoke/ (approx; see run dir listing).
+  runs/20261016T234452Z_phase2c_smoke/ (approx; see run dir listing).
 - Data-only baselines at full train size: 8 combos exactly 500 each; disagreement 50%;
   P(Y=1)=0.5; no-selector optimum 75%; 12,000 unique graph hashes.
+
+- `reports/phase2c-run-report.md` written: engineering+smoke status only; task/scientific
+  status NOT RUN per the stability stop-gate; test split 99991 never generated (untouched);
+  recommended next action = dedicated optimisation study first.
