@@ -295,3 +295,38 @@ log/env snapshot; artifact save gated behind validation gates:
 - Report: reports/phase2b-stability-report.md; artifacts under
   runs/20261016T231051Z_stability/ (metrics.jsonl, run summaries, checkpoints incl.
   failures, aggregate.json, summary.csv).
+
+## Phase C — Phase 2c implementation, tests, smoke (branch experiment/phase2c-message-conditioned-reachability)
+
+- Branch from stability state (ed46cd4). New modules, existing code untouched:
+  `data/conditioned_graph_task.py` (8-combo balanced selector task, relation graphs via
+  the v7.1 matched-DAG sampler, 64-dim union/R0/R1/id layout, namespaced 3-graph hashing,
+  split seeds 4201/13371/99991 predeclared, data-only baseline helper);
+  `model/swarm_conditioned.py` (LatentConditionedSwarm 279,561 params; LatentDualRelationSwarm
+  compute-both-then-select diagnostic 280,075 params, decoder replaced by Identity so no
+  dead parameters; documented Core B warm-start mapping with zeroed relation channels —
+  verified bit-exact against the Phase 1 encoder; one-way COMM masks reused from Phase 2b).
+- `test_phase2c.py`: 13 tests (params, layout/union, generator invariants/balance/BFS/
+  determinism/disjointness, mask semantics + message-independence, receptive field on the
+  union mask, forced-message trajectory interventions incl. final-only bit-identity
+  through step 7, terminal-only readout contract, warm-start parity, channel/forced
+  semantics, zero-message exactness, gradient flow both modes, dual selection semantics).
+  Combined suite: **31 passed** (7 + 11 + 13). Two dev-time fixes: removed two junk
+  assertions during writing; fixed dual-model warm-start (decoder replaced -> decoder
+  keys dropped from transfer) and trace-unpacking arity for the dual return signature.
+- `reports/phase2c-design.md` committed BEFORE any training: task, architecture, counts,
+  mapping, split seeds, predeclared Phase 2c gates (zero-message <=77% overall AND <=53%
+  on disagreement — the XOR 53%-overall gate explicitly NOT reused; counterfactual >=75%;
+  switch consistency >=85%; >=4/5 seeds for stable success), comparison statistics and
+  interpretation rule, and the stability-gate consequence.
+- `train_swarm_conditioned.py`: full metric suite (overall/by-bA/by-Y/quadrants/agreement/
+  disagreement, counterfactuals, switch consistency/invariance, zero-message, probe,
+  per-step trajectory by subset, final-only invariance), paired-seed determinism, last.pt
+  saved for every run incl. failures, guard refuses non-smoke runs while no eligible LR
+  exists (--allow-unstable-lr override).
+- Smoke runs (engineering-only, no research claims, no test data): primary full
+  (step-1 |Δz| 9.26e-04), primary final-only (step-1 = 0.0 exactly), dual full (1.02e-03),
+  dual final-only (0.0) — all losses finite, all grads flow. Logs in
+  runs/20261016T233732Z_phase2c_smoke/ (approx; see run dir listing).
+- Data-only baselines at full train size: 8 combos exactly 500 each; disagreement 50%;
+  P(Y=1)=0.5; no-selector optimum 75%; 12,000 unique graph hashes.

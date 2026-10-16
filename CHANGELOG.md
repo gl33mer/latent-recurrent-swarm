@@ -92,3 +92,12 @@ semantics, gates, or v7.1/Phase 2b code paths.
 LR qualifies (full-mode passes 0/3, 1/3, 1/3 at 8e-4/4e-4/2e-4; final-only 1/3, 0/3, 2/3),
 so the Phase 2b recipe is classified NOT YET STABILISED. Phase 2c will be implemented and
 smoke-tested only; no confirmatory comparison. See reports/phase2b-stability-report.md.
+
+## 2026-10-16 — Phase 2c message-conditioned reachability (branch only; smoke-only per stability gate)
+
+New: data/conditioned_graph_task.py, model/swarm_conditioned.py (279,561-param primary +
+280,075-param dual diagnostic), test_phase2c.py (13 tests; combined suite 31 passed),
+train_swarm_conditioned.py (refuses non-smoke runs without an eligible LR),
+reports/phase2c-design.md (predeclared). Smoke runs pass all engineering checks in both
+modes for both models. NO Phase 2c training beyond smoke and NO test evaluation, per the
+"not yet stabilised" verdict from the stability study.
