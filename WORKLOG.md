@@ -275,3 +275,23 @@ log/env snapshot; artifact save gated behind validation gates:
   changed; one dev-time script bug fixed after a 1-epoch sanity run: .detach() on loss
   logging and a divide-by-zero guard for 1-epoch histories). Sanity run passed;
   regression suite 18/18 after changes.
+
+## Phase B — stability sweep executed and decided (18/18 runs, ~44 min)
+
+- All 18 runs completed within budget; no test split generated; all runs finite; full-mode
+  trajectory sensitivity present from step 1 in every full run; final-only bit-identical
+  through step 7 everywhere.
+- Gate pass counts by rate (full, final-only): 8e-4 -> 0/3, 1/3; 4e-4 -> 1/3, 0/3;
+  2e-4 -> 1/3, 2/3. Predeclared eligibility rule (>=2/3 in EACH mode at the same rate)
+  satisfied at NO rate -> **recipe classified NOT YET STABILISED**. 2e-4 has the lowest
+  median instability (3.2%) and most passes (3/6); the sender-probe gate is the most
+  frequent failure at every rate.
+- Documented deviation: sweep uses an explicit DataLoader generator seed for paired batch
+  order, so per-run outcomes differ from the original six runs (which used default
+  global-RNG order); both are valid runs of the frozen recipe — seed/order sensitivity
+  underscored, artifacts unchanged.
+- Consequence per charter: Phase 2c proceeds as engineering + tests + smoke ONLY; no
+  confirmatory multi-seed comparison; no Phase 2c test evaluation.
+- Report: reports/phase2b-stability-report.md; artifacts under
+  runs/20261016T231051Z_stability/ (metrics.jsonl, run summaries, checkpoints incl.
+  failures, aggregate.json, summary.csv).

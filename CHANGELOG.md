@@ -85,3 +85,10 @@ driver `experiments/stability/run_stability_sweep.py` (train/val only, per-epoch
 components, stratified validation metrics, per-group gradient norms, NaN/Inf checks,
 trajectory sensitivity, checkpoints saved for failed runs too). No change to model
 semantics, gates, or v7.1/Phase 2b code paths.
+
+## 2026-10-16 — stability sweep result: no eligible learning rate
+
+18/18 instrumented runs completed (validation-only). Under the predeclared rule no shared
+LR qualifies (full-mode passes 0/3, 1/3, 1/3 at 8e-4/4e-4/2e-4; final-only 1/3, 0/3, 2/3),
+so the Phase 2b recipe is classified NOT YET STABILISED. Phase 2c will be implemented and
+smoke-tested only; no confirmatory comparison. See reports/phase2b-stability-report.md.
