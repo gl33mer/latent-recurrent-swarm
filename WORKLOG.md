@@ -217,3 +217,26 @@ Charter: `latent_phase2b.md` (pulled from remote commit `eb0b85b`). Local == rem
 - `reports/phase2b-design.md`: pre-declared hypothesis, equations, parameter table,
   one-way rationale, XOR-task limitation, controls and gates, test plan. README updated
   with the Phase 2b scope note (baseline description retained).
+
+## Phase 2b training and evaluation (all runs preserved; no gate relaxed)
+
+Six runs at the frozen v7.1 recipe (mode × seeds 42/43/44), each in its own run dir with
+log/env snapshot; artifact save gated behind validation gates:
+
+- **PASS:** full/seed43 (val 95.00%, test 94.80%; probe 95.00/99.80/90.20) and
+  final-only/seed42 (val 99.70%, **test 100.00%**, all quadrants 100%).
+- **FAIL (4):** full/seed42 (probe 92.30/89.00), full/seed44 (probe 82.60), final-only/seed43
+  (connected 67.60 + quadrants + probe), final-only/seed44 (connected 74.80, quadrant 47.2,
+  flip residual b_B=0 21.87%, probe).
+- Epoch trajectories show severe instability in all six runs (collapses of 20-50 points,
+  e.g. full/seed42 97.9→45.9→91.7), unlike deterministic Phase 2a. Recorded as a finding;
+  no hyperparameters changed.
+- **Trajectory sensitivity (mechanistic evidence):** full mode — bit changes graph-node
+  states from step 1, effect grows ~monotonically (e.g. seed43: .105→1.034 by step 8);
+  final-only — exactly zero through step 7, nonzero only at step 8 (within-trajectory late
+  fusion), matching the unit-test prediction bit-exactly.
+- Zero-message control: 49.7-50.8% (chance) in every run — the bit is always necessary.
+- Test split evaluated exactly once, only for the two gate-passing models; never used for
+  tuning. No paired seed passed both modes → benchmark cannot discriminate full vs
+  final-only access, as pre-declared in the design report.
+- Full details: `reports/phase2b-run-report.md`. Branch pushed; NOT merged to main.

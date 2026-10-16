@@ -59,3 +59,12 @@ params), `test_phase2b.py` (11 tests; combined suite 18 passed), `train_swarm_co
 (CLI trainer with full/final-only modes, matched Phase 2a recipe, stratified gates,
 trajectory-sensitivity diagnostics, smoke mode), `reports/phase2b-design.md` (pre-declared
 design/gates), README Phase 2b scope section. v7.1 model/data/tests/trainers untouched.
+
+## 2026-10-16 — Phase 2b runs (branch only)
+
+Six matched training runs (full/final-only × seeds 42/43/44). Two passed all validation
+gates (full/seed43, final-only/seed42); four failed at least one gate — recorded verbatim,
+no thresholds altered. Trajectory diagnostics confirm recurrent bit-integration in full
+mode and exact step-8-only influence in final-only mode. Training instability at the
+frozen v7.1 recipe documented as a finding; stabilisation and a message-conditioned task
+are proposed as separate follow-ups. See `reports/phase2b-run-report.md`.
