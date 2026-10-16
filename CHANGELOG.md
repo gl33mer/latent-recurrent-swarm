@@ -14,6 +14,11 @@
    integration is implemented or claimed.
 3. **Housekeeping:** added `*.swp` to `.gitignore` for a pre-existing editor swap file
    in the working directory. No project code affected.
+4. **Repository visibility (2026-10-16, post-run, owner request):** repository switched
+   from private to **public** for external review at the owner's explicit instruction,
+   after the completed baseline run and a secret scan of all tracked content. The v7.1
+   spec's private-by-default rule governed the initial setup only; provenance of this
+   change is recorded here and in `WORKLOG.md`.
 4. **Test hardening already present in the canonical suite** (recorded, not modified):
    `test_binary_channel_contract` requires the seeded batch to exercise both message
    polarities plus exact flip inversion; `test_parity_head_generalization_on_noisy_inputs`
