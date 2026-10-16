@@ -188,3 +188,32 @@ Charter: `latent_phase2b.md` (pulled from remote commit `eb0b85b`). Local == rem
 - Artifact: `runs/20261016T215726Z/checkpoint_phase2a.pt` (checksum in
   `runs/20261016T215726Z/checkpoint_phase2a.sha256`), metadata `phase2a_metadata.json`,
   full log `train_swarm_rerun.log`. All Git-ignored.
+
+## Phase 2b implementation (branch `experiment/phase2b-comm-token`, from main `2df939d`)
+
+- `model/swarm_comm.py`: `LatentCommSwarm` (284,107 params; verified). 17-token Core B
+  (16 graph nodes + read-only COMM register at index 16); per-step masks via
+  `comm_step_mask` (`full` = COMM visible steps 1-8; `final-only` = step 8 only); parity
+  head consumes ONLY z_B[15] ([batch,128], hook-asserted); trace mode records Core B
+  graph-node states after every step; `build_comm_state` zeroes the message contribution
+  (embedder+bias bypassed) under zero_message. v7.1 files untouched; Phase 1 state dict
+  loads strict=True into both cores.
+- Mechanistic unit-test result: in `final-only` mode, Core B graph-node states are
+  **bit-identical** across message polarities for steps 1-7 (max|Δz| = 0.0) and differ at
+  step 8 — the one-way mask works exactly as designed. In `full` mode, states differ from
+  step 1 onward.
+- `test_phase2b.py`: 11 tests (masks, schedules, receptive field with COMM present, no
+  late fusion, channel contract, zero-message semantics, gradient flow, generator
+  determinism, checkpoint compatibility, parameter counts). One defect found and fixed
+  during development: a forward-pre-hook lambda returned a value (interpreted as
+  replacement args) — rewritten as a proper hook function. Combined suite:
+  **18 passed (7 baseline + 11 Phase 2b) in 5.23 s.**
+- `train_swarm_comm.py`: CLI `--mode full|final-only --seed --epochs --run-dir
+  --checkpoint --smoke`; Phase 2a-identical recipe (data seeds 42/1337/9999, batch 64,
+  AdamW 8e-4/1e-2, 20 epochs, same loss weights, warm start); Phase 2a gates + empty-group
+  guards + (full mode) intermediate-step trajectory-sensitivity requirement; post-gate
+  checkpoint/metadata/sha256 saving; smoke mode (1 epoch / 2 batches) — both modes pass
+  all engineering checks (logs under `runs/*_smoke/`).
+- `reports/phase2b-design.md`: pre-declared hypothesis, equations, parameter table,
+  one-way rationale, XOR-task limitation, controls and gates, test plan. README updated
+  with the Phase 2b scope note (baseline description retained).

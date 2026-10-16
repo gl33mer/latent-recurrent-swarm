@@ -51,3 +51,11 @@ Branch `chore/preserve-v7.1-artifacts`; baseline source frozen at tag `v7.1-base
    `test_binary_channel_contract` requires the seeded batch to exercise both message
    polarities plus exact flip inversion; `test_parity_head_generalization_on_noisy_inputs`
    runs five fixed seeds with a separate noisy test set at a 99% threshold.
+
+## 2026-10-16 — Phase 2b COMM-token implementation (branch experiment/phase2b-comm-token)
+
+New code, no change to v7.1 paths: `model/swarm_comm.py` (LatentCommSwarm, 284,107
+params), `test_phase2b.py` (11 tests; combined suite 18 passed), `train_swarm_comm.py`
+(CLI trainer with full/final-only modes, matched Phase 2a recipe, stratified gates,
+trajectory-sensitivity diagnostics, smoke mode), `reports/phase2b-design.md` (pre-declared
+design/gates), README Phase 2b scope section. v7.1 model/data/tests/trainers untouched.
