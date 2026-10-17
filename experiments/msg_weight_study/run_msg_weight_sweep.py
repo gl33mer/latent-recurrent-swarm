@@ -180,7 +180,8 @@ def evaluate_trajectory(model, loader, comm_mode):
                 if comm_mode == "final-only" and t <= 7:
                     invariance.append(bool(torch.equal(tp[t], tn[t])))
                 n_nodes, d_dim = delta.shape[1], delta.shape[2]
-                for g, mask in (("overall", torch.ones_like(b_B)),
+                overall_mask = torch.ones_like(b_B, dtype=torch.bool)  # boolean, not int!
+                for g, mask in (("overall", overall_mask),
                                 ("b_B=0", b_B == 0), ("b_B=1", b_B == 1)):
                     sel = delta[mask]
                     n_sel = int(mask.sum())
@@ -190,7 +191,7 @@ def evaluate_trajectory(model, loader, comm_mode):
                     elem[g]["graph"][t] += n_sel * n_nodes * d_dim
                     sum_abs[g]["terminal"][t] += float(sel[:, -1, :].sum())
                     elem[g]["terminal"][t] += n_sel * d_dim
-            for g, mask in (("overall", torch.ones_like(b_B)),
+            for g, mask in (("overall", torch.ones_like(b_B, dtype=torch.bool)),
                             ("b_B=0", b_B == 0), ("b_B=1", b_B == 1)):
                 samples[g] += int(mask.sum())
     if samples["overall"] == 0 or samples["b_B=0"] == 0 or samples["b_B=1"] == 0:

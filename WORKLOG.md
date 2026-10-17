@@ -295,3 +295,26 @@ log/env snapshot; artifact save gated behind validation gates:
 - Report: reports/phase2b-stability-report.md; artifacts under
   runs/20261016T231051Z_stability/ (metrics.jsonl, run summaries, checkpoints incl.
   failures, aggregate.json, summary.csv).
+
+## Message-weight study: implementation + a caught aggregator bug (branch experiment/phase2b-msg-supervision-weight-study)
+
+- Design predeclared and committed (a6eb669) BEFORE any sweep code/outcome; implementation
+  note appended (still pre-registration): the frozen Phase 2b interface has no
+  force_message, so trajectory counterfactuals use the emitted bit vs flip_message=True
+  (same opposite-polarity intervention as the frozen stability runner).
+- New isolated runner experiments/msg_weight_study/run_msg_weight_sweep.py (frozen files
+  untouched); unit tests in test_msg_weight_study.py (lambda threads only into msg BCE;
+  pairing checksums; train/val-only guard incl. "99991" and "conditioned" absence from the
+  runner source; frozen gate thresholds verified at boundaries; corrected trajectory
+  aggregation; checkpoint-on-failure policy via a real 1-epoch run).
+- **Bug caught by the new tests before any sweep run:** the runner's "overall" trajectory
+  group mask was built with torch.ones_like(b_B) on an INT64 tensor -> integer indexing
+  (aggregating copies of one example) instead of boolean masking; subgroup means were
+  correct, overall was not (it fell below both subgroups). Fixed with
+  torch.ones_like(b_B, dtype=torch.bool); hand-computed weighted-mean assertions now
+  genuinely execute (overall 0.75 exactly). The Phase 2c fix-only aggregator is NOT
+  affected (it masks with ones_like on a boolean tensor).
+- Also verified empirically: per-example trajectory deltas are batch-composition
+  independent to 3.7e-9 on the frozen model (an earlier apparent 2.3 divergence was a
+  broadcasting mistake in a debug script, not a model property).
+- Combined suite on this branch: 25 passed (7 v7.1 + 11 frozen Phase 2b + 7 study).
