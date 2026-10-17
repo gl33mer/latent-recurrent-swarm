@@ -93,3 +93,15 @@ IN` and **stop for owner review**; Phase 2c confirmation is explicitly out of sc
 **120 minutes** wall-clock for all 18 runs. If the cap is approached, finish the current
 run safely, classify the grid incomplete, and do not apply the selection rule as though
 the grid had completed.
+
+---
+
+## Implementation note (dated 2026-10-17, appended BEFORE any sweep run; no outcome viewed)
+
+The frozen Phase 2b `LatentCommSwarm` interface (verified at base `ed46cd4`) exposes
+`flip_message` but not `force_message` (that parameter exists only on the Phase 2c
+models, which this study must not touch). The trajectory counterfactual therefore uses
+the model's **own emitted bit vs its exact negation** (`flip_message=True`) — the same
+opposite-polarity intervention the frozen stability runner used, and mechanistically
+equivalent to forced ±1 traces for the sensitivity metrics (the pair is always (m, −m)).
+All other design points are unchanged. Frozen model/interface files are not modified.
