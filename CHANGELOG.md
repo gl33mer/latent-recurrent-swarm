@@ -128,3 +128,15 @@ primary runs ~59-64% overall, disagreement ~chance, probe ~100%, mechanism gates
 stable plateaus); dual diagnostic also at chance on disagreement → bottleneck is
 per-relation computation. Test split seed 99991 NOT generated; evaluator NOT invoked.
 Classification: VALIDATION PARTIAL/UNSTABLE — TEST UNTOUCHED.
+
+## 2026-10-17 — Phase 2c receiver-capability audit & matched mask ablation (branch experiment/phase2c-receiver-audit)
+
+New diagnostic scripts `audit_stage0_transfer.py` (frozen Phase 1 transfer to single-relation
+Phase 2c graphs: 99.80%/99.80% — distribution mismatch rejected) and `audit_stage1_ablation.py`
+(matched mask ablation, identical init/inputs/targets: native-R0 mask 89.80% final (peak
+99.20% @ ep15) vs union mask 80.40% — union topology substantially retards single-relation
+learning; strict decision-matrix cells not met → PARTIAL/AMBIGUOUS). `model/core.py` gained a
+backward-compatible optional `attn_mask` override on `LatentReasoner.forward` (verified
+exactly equivalent; 53/53 tests). Housekeeping: historical note prepended to
+`reports/phase2c-run-report.md`; trainer docstring corrected; test seeds 99991/9999 never
+used. Report: `reports/phase2c-receiver-audit-report.md`.

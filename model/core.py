@@ -4,7 +4,7 @@ Exact parameter count: 137,476.
 """
 import torch
 import torch.nn as nn
-from typing import Tuple
+from typing import Optional, Tuple
 
 def binarize_ste(x: torch.Tensor) -> torch.Tensor:
     """Straight-Through Estimator for binary {-1.0, +1.0} scalar."""
@@ -93,8 +93,10 @@ class LatentReasoner(nn.Module):
     def step(self, z: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
         return self.core(z, attn_mask)
 
-    def forward(self, x: torch.Tensor, steps: int = 8) -> Tuple[torch.Tensor, torch.Tensor]:
-        attn_mask = self.build_attention_mask(x)
+    def forward(self, x: torch.Tensor, steps: int = 8,
+                attn_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        if attn_mask is None:
+            attn_mask = self.build_attention_mask(x)
         z = self.encoder(x)
         for _ in range(steps):
             z = self.step(z, attn_mask)

@@ -1,3 +1,5 @@
+> *Historical Note (2026-10-17): This report reflects the earlier engineering milestone where training was skipped. For the completed 15-run confirmatory study, see `reports/phase2c-candidate-recipe-run-report.md`.*
+
 # Phase 2c Run Report — Message-Conditioned Reachability
 
 **Branch:** `experiment/phase2c-message-conditioned-reachability`
