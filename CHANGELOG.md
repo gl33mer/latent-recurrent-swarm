@@ -115,3 +115,16 @@ corrected to element-weighted means with terminal-node intermediate gate and exa
 final-only invariance; old magnitudes retracted via
 reports/phase2c-trajectory-metric-erratum.md. Combined suite 47 passed. No confirmatory
 training, no test evaluation. See reports/phase2c-fix-only-report.md.
+
+## 2026-10-17 — Phase 2c confirmatory validation run: PARTIAL/UNSTABLE (test untouched)
+
+Phase 2b report erratum pushed to the study branch (607221a). On new branch
+experiment/phase2c-lambda2-paired-confirmatory (from 744e871): recipe-transfer addendum
+pre-registered (4939d94) before training; trainer wired for the candidate recipe
+(lr 2e-4, lambda_msg 2.0 default, --confirmatory-phase2c exact-recipe guard replacing the
+generic bypass, atomic per-epoch last.pt, per-epoch metrics); 53/53 tests. Confirmatory
+grid (source commit ce3c009): 15/15 runs completed; 0/5 paired seeds qualified (all
+primary runs ~59-64% overall, disagreement ~chance, probe ~100%, mechanism gates passed,
+stable plateaus); dual diagnostic also at chance on disagreement → bottleneck is
+per-relation computation. Test split seed 99991 NOT generated; evaluator NOT invoked.
+Classification: VALIDATION PARTIAL/UNSTABLE — TEST UNTOUCHED.

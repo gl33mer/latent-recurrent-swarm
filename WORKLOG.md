@@ -403,3 +403,26 @@ all recorded checkpoints present with matching SHA-256s; run dirs untouched.
   new recipe tests added (lambda threads only into msg BCE; guard rejections; metadata/
   fingerprint; paired init identity; loader order identity; 99991 + bypass absence).
   Combined suite: 53 passed (7 + 11 + 35).
+
+## Stage F: confirmatory validation grid — PARTIAL/UNSTABLE, test untouched
+
+- 15/15 runs at source commit ce3c009 (10 primary paired + 5 dual), ~56 min, no
+  interruptions/non-finite events; paired initial-state checksums matched for every seed.
+- Result: **0/5 paired seeds qualified** (0/5 full, 0/5 final-only). Universal failures:
+  overall (~59-64% < 82%), quadrants, counterfactuals, switch consistency; mechanism gates
+  PASSED everywhere (full-mode terminal-node sensitivity present; final-only bit-identity
+  through step 7). Probe ~100% everywhere; zero-message at chance.
+- Trajectories are stable plateaus (58-64%, zero >15pp drops) — the recipe did NOT
+  destabilise Phase 2c; the models plateau far below the gates. Disagreement subset at
+  chance (~50%) for EVERY model including the dual compute-both diagnostic → the bottleneck
+  is per-relation reachability computation, not message access; no selector mechanism can
+  fix a receiver that cannot compute the candidates.
+- Per the predeclared stop rule: test split NOT generated, evaluator NOT invoked, no reruns,
+  no setting changes. Descriptive paired val Δ on disagreement (full − final-only):
+  +3.2/+0.8/+1.4/+3.6/+2.4 pp (mean +2.28) — both at chance, not meaningful.
+- Report: reports/phase2c-candidate-recipe-run-report.md. Durable archive:
+  /workspace/latent-recurrent-swarm-archive/phase2c-confirmatory_20261017T133950Z.tar.gz
+  (sha256 0fa4f967…, 75 MB, single-volume caveat).
+- Recommendation: separate predeclared capacity/training-budget study, evaluated first on
+  the dual diagnostic (isolates per-relation computation from selection), then the primary
+  paired comparison. Test split remains reserved.
