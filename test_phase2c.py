@@ -4,6 +4,7 @@ Run together with the unchanged earlier suites:
     python -m pytest -q test_system.py test_phase2b.py test_phase2c.py
 Baseline suites are not modified or replaced.
 """
+import json
 import os
 import pytest
 import torch
@@ -256,11 +257,11 @@ def test_dual_gradient_paths_and_loss_wiring():
              torch.randint(0, 2, (8,)), torch.randint(0, 2, (8,)),
              torch.randint(0, 2, (8,)), torch.randint(0, 2, (8,)))
     outputs = dual(batch[0], batch[1])
-    loss = compute_loss("dual", outputs, batch, crit, crit_msg)
-    # Manual recomputation must match the wired loss exactly.
+    loss = compute_loss("dual", outputs, batch, crit, crit_msg, lambda_msg=2.0)
+    # Manual recomputation must match the wired loss exactly (lambda_msg=2.0 per addendum D2).
     r0l, r1l, raw_m, aux_A, _ = outputs
     expected = crit(r0l, batch[3]) + crit(r1l, batch[4]) + 0.5 * crit(aux_A, batch[2]) \
-             + 0.5 * crit_msg(raw_m.squeeze(-1), batch[2].float())
+             + 2.0 * crit_msg(raw_m.squeeze(-1), batch[2].float())
     assert torch.equal(loss, expected), "Dual loss wiring deviates from the predeclared objective"
     # A swapped wiring (r0 head against r1 labels) must give a different value on this batch.
     swapped = crit(r0l, batch[4]) + crit(r1l, batch[3]) + 0.5 * crit(aux_A, batch[2]) \
@@ -280,10 +281,10 @@ def test_primary_loss_wiring():
              torch.randint(0, 2, (8,)), torch.randint(0, 2, (8,)),
              torch.randint(0, 2, (8,)), torch.randint(0, 2, (8,)))
     outputs = primary(batch[0], batch[1])
-    loss = compute_loss("primary", outputs, batch, crit, crit_msg)
+    loss = compute_loss("primary", outputs, batch, crit, crit_msg, lambda_msg=2.0)
     logits, raw_m, aux_A, _ = outputs
     expected = crit(logits, batch[5]) + 0.5 * crit(aux_A, batch[2]) \
-             + 0.5 * crit_msg(raw_m.squeeze(-1), batch[2].float())
+             + 2.0 * crit_msg(raw_m.squeeze(-1), batch[2].float())
     assert torch.equal(loss, expected), "Primary loss wiring deviates from the predeclared objective"
     # Selected-task loss must use Y (the selector rule), not r0 or r1 directly.
     against_r0 = crit(logits, batch[3]) + 0.5 * crit(aux_A, batch[2]) \
@@ -609,3 +610,104 @@ def _phase1_sha():
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+# ------------------- Candidate-recipe tests (addendum D2/E1, 2026-10-17) -------------------
+
+import train_swarm_conditioned as tc
+
+def test_lambda_msg_changes_only_message_term():
+    torch.manual_seed(0)
+    model = LatentConditionedSwarm()
+    crit, crit_msg = nn.CrossEntropyLoss(), nn.BCEWithLogitsLoss()
+    ds, _ = generate_conditioned_benchmark(num_samples=8, seed=SPLIT_SEEDS["train"])
+    batch = ds.tensors
+    outputs = model(batch[0], batch[1])
+    l_half = tc.compute_loss("primary", outputs, batch, crit, crit_msg, lambda_msg=0.5)
+    l_two = tc.compute_loss("primary", outputs, batch, crit, crit_msg, lambda_msg=2.0)
+    # Only the message term scales: l(λ) = base + (λ-0.5)*msg
+    logits, raw_m, aux_A, _ = outputs
+    msg = crit_msg(raw_m.squeeze(-1), batch[2].float())
+    assert torch.allclose(l_two - l_half, 1.5 * msg, atol=1e-7)
+    # Manual recomputation at λ=2.0 matches exactly.
+    manual = crit(logits, batch[5]) + 0.5 * crit(aux_A, batch[2]) + 2.0 * msg
+    assert torch.equal(l_two, manual)
+    # Dual: r0/r1 heads unchanged by lambda; only msg scales.
+    dual = LatentDualRelationSwarm()
+    out_d = dual(batch[0], batch[1])
+    d_half = tc.compute_loss("dual", out_d, batch, crit, crit_msg, lambda_msg=0.5)
+    d_two = tc.compute_loss("dual", out_d, batch, crit, crit_msg, lambda_msg=2.0)
+    r0l, r1l, raw_md, aux_Ad, _ = out_d
+    msg_d = crit_msg(raw_md.squeeze(-1), batch[2].float())
+    assert torch.allclose(d_two - d_half, 1.5 * msg_d, atol=1e-7)
+
+def test_confirmatory_guard_rejects_alternate_recipes(monkeypatch, capsys):
+    # Wrong LR refused with exit 2.
+    with pytest.raises(SystemExit) as e:
+        tc.parse_args(["--mode", "full", "--confirmatory-phase2c", "--lr", "1e-4"])
+    assert e.value.code == 2
+    # Wrong lambda refused.
+    with pytest.raises(SystemExit) as e:
+        tc.parse_args(["--mode", "full", "--confirmatory-phase2c", "--lambda-msg", "1.0"])
+    assert e.value.code == 2
+    # Wrong epochs refused.
+    with pytest.raises(SystemExit) as e:
+        tc.parse_args(["--mode", "full", "--confirmatory-phase2c", "--epochs", "10"])
+    assert e.value.code == 2
+    # Unauthorised seed refused.
+    with pytest.raises(SystemExit) as e:
+        tc.parse_args(["--mode", "full", "--confirmatory-phase2c", "--seed", "99"])
+    assert e.value.code == 2
+    # Missing flag refused.
+    with pytest.raises(SystemExit) as e:
+        tc.parse_args(["--mode", "full"])
+    assert e.value.code == 2
+    # Exact candidate recipe accepted (seed 45 included in the predeclared set).
+    args = tc.parse_args(["--mode", "full", "--confirmatory-phase2c", "--seed", "45"])
+    assert args.lr == 2e-4 and args.lambda_msg == 2.0 and args.epochs == 20
+
+def test_candidate_recipe_metadata_and_fingerprint(tmp_path):
+    """A real 1-epoch primary run records lr, lambda_msg, initial checksum, config
+    fingerprint and atomic last.pt."""
+    args = tc.parse_args(["--mode", "full", "--confirmatory-phase2c", "--seed", "42",
+                          "--run-dir", str(tmp_path)])
+    tc.train_phase2c(args)
+    meta_file = tmp_path / "meta_primary_full_seed42.json"
+    assert meta_file.exists()
+    meta = json.loads(meta_file.read_text())
+    assert meta["lr"] == 2e-4 and meta["lambda_msg"] == 2.0
+    assert meta["initial_state_checksum"] and meta["final_state_checksum"]
+    assert meta["config_fingerprint"] and meta["phase1_checkpoint_sha256"] == tc.PHASE1_SHA_EXPECTED
+    assert (tmp_path / "last.pt").exists() and (tmp_path / "metrics.jsonl").exists()
+    rec = json.loads((tmp_path / "metrics.jsonl").read_text().splitlines()[0])
+    assert rec["lambda_msg"] == 2.0 and rec["lr"] == 2e-4
+
+def test_paired_initialisation_identical_within_seed():
+    """full and final-only primary models for the same seed start bit-identical."""
+    checksums = []
+    for mode in ("full", "final-only"):
+        tc.set_seed(43)
+        model = LatentConditionedSwarm()
+        p1 = torch.load("checkpoint_phase1.pt", map_location="cpu", weights_only=True)
+        model.load_phase1_warm_start(p1)
+        checksums.append(tc._initial_state_checksum(model))
+    assert checksums[0] == checksums[1]
+
+def test_loader_order_identical_within_pair():
+    """The train DataLoader yields identical batch order for the same seed (pairing)."""
+    l1 = tc.build_loaders(44)[0]
+    l2 = tc.build_loaders(44)[0]
+    b1 = [float(b[0][0, 0, 0]) for b in l1]
+    b2 = [float(b[0][0, 0, 0]) for b in l2]
+    assert b1 == b2 and len(b1) == 63  # 4000/64 -> 63 batches
+
+def test_train_path_cannot_generate_test_split(monkeypatch):
+    import data.conditioned_graph_task as cgt
+    real = cgt.generate_conditioned_benchmark
+    def guard(num_samples, seed, existing_hashes=None, **kw):
+        assert seed != 99991, "Training must never generate the Phase 2c test split."
+        return real(num_samples=num_samples, seed=seed, existing_hashes=existing_hashes)
+    monkeypatch.setattr(tc, "generate_conditioned_benchmark", guard)
+    src = open("train_swarm_conditioned.py").read()
+    assert 'SPLIT_SEEDS["test"]' not in src
+    assert "allow-unstable-lr" not in src and "allow_unstable_lr" not in src, \
+        "The generic bypass must not remain"

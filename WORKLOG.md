@@ -382,3 +382,24 @@ all recorded checkpoints present with matching SHA-256s; run dirs untouched.
 - `reports/phase2c-fix-only-report.md`: full engineering report per charter §12.
 - Metadata correction: stability report's run-dir path fixed `231051Z` -> `225726Z`
   (verified on disk) with a dated note appended; no numbers changed.
+
+## Phase 2c candidate-recipe branch (charter: ...confirmatory_prompt.md @ main 2e8d4db)
+
+- Stage B: raw-data recomputation confirmed the charter's corrections (probe failures 3/6
+  at λ=0.5, not 4/6; non-monotonic medians 4.68/5.62/2.47%); dated erratum committed and
+  pushed to the study branch (607221a).
+- Stage C: branch experiment/phase2c-lambda2-paired-confirmatory created from 744e871;
+  all 8 fix invariants verified in source; 47/47 tests before changes.
+- Stage D: recipe-transfer addendum committed+pushed (4939d94) BEFORE any training: locked
+  lr=2e-4, λ_msg=2.0, seeds 42-46, 10 primary + 5 dual runs, paired-qualification rule
+  (≥4/5 pairs, both modes pass), frozen Phase 2c gates, predeclared paired-bootstrap
+  method (10k resamples, example-level, seed 20261), stop rule.
+- Stage E: trainer wired (--lambda-msg default 2.0, --lr default 2e-4, atomic last.pt
+  every epoch + epoch05-20, per-epoch metrics.jsonl with val/probe/zero/grad-norms,
+  initial/final state checksums, config fingerprint, metadata with lambda_msg);
+  --allow-unstable-lr REMOVED, replaced by --confirmatory-phase2c + exact-recipe guard
+  (exit 2 on any deviation; verified against wrong lr/λ/epochs/seed/missing flag).
+  Old loss-wiring tests updated to the new λ=2.0 objective (evidence: addendum D2);
+  new recipe tests added (lambda threads only into msg BCE; guard rejections; metadata/
+  fingerprint; paired init identity; loader order identity; 99991 + bypass absence).
+  Combined suite: 53 passed (7 + 11 + 35).

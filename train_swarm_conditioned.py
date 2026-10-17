@@ -9,10 +9,11 @@ counterfactual >=75% per relation, switch consistency >=85% (disagreement) / inv
 >=85% (agreement), and the mechanism requirements (full-mode intermediate trajectory
 sensitivity; final-only bit-identical traces through step 7).
 
-IMPORTANT (stability gate): the Stage 2 sweep found no eligible shared learning rate, so
-only --smoke (engineering check, no research claims, no test data) is permitted in this
-iteration. A confirmatory run requires an explicit --lr justified by a future stability
-selection; the trainer refuses non-smoke runs without --allow-unstable-lr as a guard.
+Confirmatory training (2026-10-17 recipe-transfer addendum): non-smoke runs require
+--confirmatory-phase2c AND the exact committed candidate recipe (lr=2e-4, lambda_msg=2.0,
+weight decay 1e-2, batch 64, 20 epochs, seeds 42-46, verified Phase 1 checkpoint SHA).
+No generic bypass exists; anything else is refused with exit code 2. Smoke mode stays
+engineering-only and never generates test data.
 
 Checkpoints: last.pt is saved for EVERY run (including gate failures) — failed optimisation
 is evidence. The test split is generated only for non-smoke runs and evaluated exactly once.
@@ -58,21 +59,19 @@ def _sha256(path):
     return h.hexdigest()
 
 
-def compute_loss(model_kind, outputs, batch, crit, crit_msg):
-    """Predeclared objective wiring (reports/phase2c-design.md §6), factored out for
-    testability. Primary: selected-task CE on Y + 0.5·aux_A CE + 0.5·msg BCE.
-    Dual diagnostic: r0 head CE against r0, r1 head CE against r1 (relation heads are
-    supervised ONLY with their own relation labels — never with Y, so late-selection
-    candidates stay relation-pure), + 0.5·aux_A CE + 0.5·msg BCE. The discrete
-    selection itself is not part of any loss; the sender's gradient path is the msg BCE."""
+def compute_loss(model_kind, outputs, batch, crit, crit_msg, lambda_msg=2.0):
+    """Predeclared objective wiring (reports/phase2c-design.md §6; lambda_msg per the
+    2026-10-17 recipe-transfer addendum). lambda_msg scales ONLY the message BCE term.
+    Primary: CE(task, Y) + 0.5·CE(aux_A, b_A) + lambda_msg·BCE(raw_m, b_A).
+    Dual: CE(r0, r0_labels) + CE(r1, r1_labels) + 0.5·CE(aux_A, b_A) + lambda_msg·BCE."""
     _, _, b_A, r0, r1, Y = batch
     if model_kind == "primary":
         logits, raw_m, aux_A, m = outputs
         return crit(logits, Y) + 0.5 * crit(aux_A, b_A) \
-             + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
+             + lambda_msg * crit_msg(raw_m.squeeze(-1), b_A.float())
     r0_logits, r1_logits, raw_m, aux_logits_A, m = outputs
     return crit(r0_logits, r0) + crit(r1_logits, r1) + 0.5 * crit(aux_logits_A, b_A) \
-         + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
+         + lambda_msg * crit_msg(raw_m.squeeze(-1), b_A.float())
 
 
 def build_loaders(seed):
@@ -287,12 +286,81 @@ def apply_gates(val_metrics, cf, zero, traj, comm_mode):
     return {"passed": not failed, "failed_criteria": failed}
 
 
+PHASE1_SHA_EXPECTED = "ef4514342b65e16f901774134d03a0c4db8f69fd38dccd56eda1dcf29e50049e"
+CANDIDATE_RECIPE = {
+    "lr": 2e-4, "lambda_msg": 2.0, "weight_decay": 1e-2, "batch_size": 64,
+    "epochs": 20, "steps_A": 8, "steps_B": 8,
+    "loss_weights": {"task": 1.0, "aux_A": 0.5, "aux_B": 0.5},
+    "seeds": (42, 43, 44, 45, 46),
+}
+
+
+def _initial_state_checksum(model):
+    import io
+    buf = io.BytesIO()
+    torch.save({k: v.detach().clone() for k, v in model.state_dict().items()}, buf)
+    return hashlib.sha256(buf.getvalue()).hexdigest()
+
+
+def _atomic_save_state(model, path):
+    tmp = path + ".tmp"
+    torch.save(model.state_dict(), tmp)
+    os.replace(tmp, path)
+
+
+def _grad_group_norms(model):
+    import math
+    groups = ("core_A", "core_B", "msg_encoder", "msg_embedder", "learned_comm_token", "parity_head")
+    buckets = {g: [] for g in groups}
+    for name, p in model.named_parameters():
+        if p.grad is None:
+            continue
+        top = name.split(".")[0]
+        key = top if top in buckets else ("learned_comm_token" if "comm_token" in name else None)
+        if key:
+            buckets[key].append(p.grad)
+    out = {}
+    for g, grads in buckets.items():
+        if not grads:
+            continue  # omit nonexistent groups (e.g. dual model) rather than dummy entries
+        sq = sum(float(x.pow(2).sum()) for x in grads)
+        if not all(torch.isfinite(x).all() for x in grads):
+            return {"_nonfinite": True}
+        out[g] = math.sqrt(sq)
+    return out
+
+
+def _validate_confirmatory_recipe(args):
+    """Exact candidate-recipe guard (addendum D2): refuse anything else, exit 2."""
+    problems = []
+    if args.lr != CANDIDATE_RECIPE["lr"]:
+        problems.append(f"lr must be exactly {CANDIDATE_RECIPE['lr']:g} (got {args.lr:g})")
+    if args.lambda_msg != CANDIDATE_RECIPE["lambda_msg"]:
+        problems.append(f"lambda_msg must be exactly {CANDIDATE_RECIPE['lambda_msg']:g} (got {args.lambda_msg:g})")
+    if args.epochs != CANDIDATE_RECIPE["epochs"]:
+        problems.append(f"epochs must be exactly {CANDIDATE_RECIPE['epochs']} (got {args.epochs})")
+    if args.seed not in CANDIDATE_RECIPE["seeds"]:
+        problems.append(f"seed must be one of {CANDIDATE_RECIPE['seeds']} (got {args.seed})")
+    actual_sha = _sha256(args.checkpoint) if os.path.exists(args.checkpoint) else "MISSING"
+    if actual_sha != PHASE1_SHA_EXPECTED:
+        problems.append(f"Phase 1 checkpoint SHA mismatch/missing: {actual_sha[:16]}...")
+    if problems:
+        print("REFUSING confirmatory Phase 2c training (recipe guard, addendum D2):",
+              file=sys.stderr)
+        for p in problems:
+            print(f"  - {p}", file=sys.stderr)
+        sys.exit(2)
+
+
 def train_phase2c(args):
     set_seed(args.seed)
     model_kind = args.model
     comm_mode = args.mode
+    lambda_msg = args.lambda_msg
+    t_start = time.time()
     print(f"Phase 2c training: model={model_kind}, mode={comm_mode}, seed={args.seed}, "
-          f"epochs={args.epochs}, lr={args.lr}, git={_git_commit()[:12]}, smoke={args.smoke}")
+          f"epochs={args.epochs}, lr={args.lr:g}, lambda_msg={lambda_msg:g}, "
+          f"git={_git_commit()[:12]}, smoke={args.smoke}")
 
     loaders = build_loaders(args.seed)
     train_loader, val_loader = loaders[0], loaders[1]
@@ -304,9 +372,10 @@ def train_phase2c(args):
     else:
         model = LatentDualRelationSwarm()
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Trainable parameters: {n_params}")
     p1_state = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     model.load_phase1_warm_start(p1_state)
+    init_checksum = _initial_state_checksum(model)
+    print(f"Trainable parameters: {n_params}; initial-state checksum {init_checksum[:16]}...")
     print(f"Warm start applied from {args.checkpoint} (Core A strict; Core B documented mapping)")
 
     crit = nn.CrossEntropyLoss()
@@ -321,16 +390,14 @@ def train_phase2c(args):
         model.train()
         for batch in train_loader:
             optimizer.zero_grad()
-            if model_kind == "primary":
-                outputs = model(batch[0], batch[1], comm_mode=comm_mode)
-            else:
-                outputs = model(batch[0], batch[1], comm_mode=comm_mode)
-            loss = compute_loss(model_kind, outputs, batch, crit, crit_msg)
+            outputs = model(batch[0], batch[1], comm_mode=comm_mode)
+            loss = compute_loss(model_kind, outputs, batch, crit, crit_msg, lambda_msg)
             assert torch.isfinite(loss).all(), "Non-finite loss in smoke"
             loss.backward()
             optimizer.step()
         none = [n for n, p in model.named_parameters() if p.grad is None and p.requires_grad]
-        print(f"Check shapes/loss/grads: loss finite; grad-None={none or 'NONE'}")
+        print(f"Check shapes/loss/grads: loss finite; grad-None={none or 'NONE'}; "
+              f"lambda_msg={lambda_msg:g} in loss")
         assert none == []
         ev = evaluate_conditioned(model, val_loader, comm_mode, model_kind)
         print(f"Smoke val overall (meaningless small sample): {ev['overall']*100:.1f}%")
@@ -342,18 +409,77 @@ def train_phase2c(args):
         print("Smoke checklist: engineering checks passed. NOT research results.")
         return
 
-    print(f"Training Phase 2c ({model_kind}/{comm_mode}) at T_A=8, T_B=8...")
-    for epoch in range(1, args.epochs + 1):
-        model.train()
-        for batch in train_loader:
+    ckpt_dir = args.run_dir if args.run_dir else "."
+    os.makedirs(ckpt_dir, exist_ok=True)
+    jsonl_path = os.path.join(ckpt_dir, "metrics.jsonl")
+    last_path = os.path.join(ckpt_dir, "last.pt")
+    print(f"Training Phase 2c ({model_kind}/{comm_mode}) at T_A=8, T_B=8, "
+          f"lr={args.lr:g}, lambda_msg={lambda_msg:g}...")
+    with open(jsonl_path, "w") as jf:
+        for epoch in range(1, args.epochs + 1):
+            t_ep = time.time()
+            model.train()
+            loss_sums = {k: 0.0 for k in (("total", "task", "aux_A", "msg") if model_kind == "primary"
+                                          else ("total", "r0", "r1", "aux_A", "msg"))}
+            n_batches, nonfinite = 0, 0
+            for batch in train_loader:
+                optimizer.zero_grad()
+                outputs = model(batch[0], batch[1], comm_mode=comm_mode)
+                b_A = batch[2]
+                if model_kind == "primary":
+                    logits, raw_m, aux_A, _ = outputs
+                    parts = {"task": crit(logits, batch[5]), "aux_A": crit(aux_A, b_A),
+                             "msg": crit_msg(raw_m.squeeze(-1), b_A.float())}
+                else:
+                    r0l, r1l, raw_m, aux_A, _ = outputs
+                    parts = {"r0": crit(r0l, batch[3]), "r1": crit(r1l, batch[4]),
+                             "aux_A": crit(aux_A, b_A),
+                             "msg": crit_msg(raw_m.squeeze(-1), b_A.float())}
+                loss = compute_loss(model_kind, outputs, batch, crit, crit_msg, lambda_msg)
+                if not torch.isfinite(loss).all():
+                    nonfinite += 1
+                loss.backward()
+                optimizer.step()
+                loss_sums["total"] += float(loss.detach())
+                for k, v in parts.items():
+                    loss_sums[k] += float(v.detach())
+                n_batches += 1
+            val = evaluate_conditioned(model, val_loader, comm_mode, model_kind)
+            zero = evaluate_zero_message(model, val_loader, comm_mode, model_kind)
+            params_finite = all(torch.isfinite(p).all() for p in model.parameters())
+            model.train()  # restore; grad norms computed on a fresh backward below
+            # gradient norms from one representative batch (before this epoch's step state
+            # is mutated further); diagnostic only
+            batch = next(iter(train_loader))
             optimizer.zero_grad()
             outputs = model(batch[0], batch[1], comm_mode=comm_mode)
-            loss = compute_loss(model_kind, outputs, batch, crit, crit_msg)
+            loss = compute_loss(model_kind, outputs, batch, crit, crit_msg, lambda_msg)
             loss.backward()
-            optimizer.step()
-        if epoch % 5 == 0 or epoch == args.epochs:
-            ev = evaluate_conditioned(model, val_loader, comm_mode, model_kind)
-            print(f"Epoch {epoch:02d} | Validation selected-task accuracy: {ev['overall']*100:.2f}%")
+            gnorms = _grad_group_norms(model)
+            rec = {
+                "epoch": epoch, "lr": args.lr, "lambda_msg": lambda_msg,
+                "mode": comm_mode, "model": model_kind, "seed": args.seed,
+                "train_loss_mean": {k: v / n_batches for k, v in loss_sums.items()},
+                "val_overall": val["overall"], "val_quadrants": val["quadrants"],
+                "val_agreement": val["agreement_subset"],
+                "val_disagreement": val["disagreement_subset"],
+                "val_probe_overall": val["sender_probe_overall"],
+                "val_probe_by_bA": val["sender_probe_by_bA"],
+                "val_zero_overall": zero["zero_message_overall"],
+                "val_zero_disagreement": zero["zero_message_disagreement"],
+                "nonfinite_loss_batches": nonfinite, "params_finite": params_finite,
+                "grad_norms": gnorms, "optimizer_lr": optimizer.param_groups[0]["lr"],
+                "epoch_seconds": time.time() - t_ep,
+            }
+            jf.write(json.dumps(rec) + "\n")
+            jf.flush()
+            # Mandatory checkpoint policy: atomic last.pt EVERY epoch; epochNN at 5/10/15/20.
+            _atomic_save_state(model, last_path)
+            if epoch in (5, 10, 15, 20):
+                _atomic_save_state(model, os.path.join(ckpt_dir, f"epoch{epoch:02d}.pt"))
+            print(f"Epoch {epoch:02d} | val={val['overall']*100:.2f}% | "
+                  f"disagree={val['disagreement_subset']*100:.2f}% | "
+                  f"probe={val['sender_probe_overall']*100:.2f}%", flush=True)
 
     val_metrics = evaluate_conditioned(model, val_loader, comm_mode, model_kind)
     cf = evaluate_counterfactuals(model, val_loader, comm_mode, model_kind)
@@ -386,25 +512,35 @@ def train_phase2c(args):
           "evaluate_phase2c_test.py after all configuration is frozen.")
 
     if args.run_dir:
-        os.makedirs(args.run_dir, exist_ok=True)
-        ckpt = os.path.join(args.run_dir, f"last_{model_kind}_{comm_mode}_seed{args.seed}.pt")
-        torch.save(model.state_dict(), ckpt)
+        ckpt = last_path
         sha = _sha256(ckpt)
+        config_fingerprint = hashlib.sha256(json.dumps(
+            {"lr": args.lr, "lambda_msg": lambda_msg, "epochs": args.epochs,
+             "batch_size": 64, "weight_decay": 1e-2, "steps": [8, 8],
+             "loss_weights": {"task": 1.0, "aux_A": 0.5}, "seed": args.seed,
+             "model": model_kind, "mode": comm_mode,
+             "data_seeds": SPLIT_SEEDS}, sort_keys=True).encode()).hexdigest()
         meta = {
             "artifact_kind": f"phase2c_{model_kind}_{comm_mode}",
             "git_commit": _git_commit(), "seed": args.seed, "mode": comm_mode,
-            "model": model_kind, "lr": args.lr, "epochs": args.epochs,
+            "model": model_kind, "lr": args.lr, "lambda_msg": lambda_msg,
+            "epochs": args.epochs, "batch_size": 64, "weight_decay": 1e-2,
+            "config_fingerprint": config_fingerprint,
             "param_count": n_params, "torch_version": torch.__version__,
+            "phase1_checkpoint": args.checkpoint,
             "phase1_checkpoint_sha256": _sha256(args.checkpoint),
+            "initial_state_checksum": init_checksum,
+            "final_state_checksum": _initial_state_checksum(model),
             "data_seeds": SPLIT_SEEDS, "gate_status": status,
             "validation": {k: v for k, v in val_metrics.items() if not k.startswith("_")},
             "counterfactuals": cf, "zero_message": zero,
             "trajectory_sensitivity": traj,
             "test": "NOT EVALUATED (separate evaluator required)",
             "checkpoint": ckpt, "checkpoint_sha256": sha,
+            "wall_seconds": time.time() - t_start,
             "saved_at_utc": datetime.now(timezone.utc).isoformat(),
         }
-        with open(os.path.join(args.run_dir, f"meta_{model_kind}_{comm_mode}_seed{args.seed}.json"),
+        with open(os.path.join(ckpt_dir, f"meta_{model_kind}_{comm_mode}_seed{args.seed}.json"),
                   "w") as f:
             json.dump(meta, f, indent=2, sort_keys=True)
         print(f"Artifact saved: {ckpt} (sha256 {sha[:16]}...)")
@@ -416,18 +552,30 @@ def parse_args(argv=None):
     ap.add_argument("--model", choices=("primary", "dual"), default="primary")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--lr", type=float, default=8e-4)
+    ap.add_argument("--lr", type=float, default=2e-4,
+                    help="Candidate-recipe learning rate (addendum D2); confirmatory runs "
+                         "must use exactly 2e-4")
+    ap.add_argument("--lambda-msg", dest="lambda_msg", type=float, default=2.0,
+                    help="Sender-message BCE coefficient (addendum D2); confirmatory runs "
+                         "must use exactly 2.0")
     ap.add_argument("--run-dir", default=None)
     ap.add_argument("--checkpoint", default="checkpoint_phase1.pt")
-    ap.add_argument("--smoke", action="store_true")
-    ap.add_argument("--allow-unstable-lr", action="store_true",
-                    help="Required for non-smoke runs while no stability-eligible LR exists")
+    ap.add_argument("--smoke", action="store_true",
+                    help="Engineering-only smoke; never generates test data or gates")
+    ap.add_argument("--confirmatory-phase2c", action="store_true",
+                    help="Authorise non-smoke training ONLY under the exact committed "
+                         "candidate recipe (lr=2e-4, lambda_msg=2.0, wd=1e-2, batch 64, "
+                         "20 epochs, seeds 42-46, verified Phase 1 checkpoint)")
     args = ap.parse_args(argv)
-    if not args.smoke and not args.allow_unstable_lr:
-        print("REFUSING: no stability-eligible learning rate exists (see "
-              "reports/phase2b-stability-report.md). Use --smoke for engineering checks only, "
-              "or pass --allow-unstable-lr to explicitly accept an unstable recipe.", file=sys.stderr)
+    if args.smoke:
+        return args
+    if not args.confirmatory_phase2c:
+        print("REFUSING: non-smoke Phase 2c training requires --confirmatory-phase2c, and "
+            "the recipe must exactly match the committed addendum "
+            "reports/phase2c-recipe-transfer-addendum-2026-10-17.md "
+            "(lr=2e-4, lambda_msg=2.0). No generic bypass exists.", file=sys.stderr)
         sys.exit(2)
+    _validate_confirmatory_recipe(args)
     return args
 
 
