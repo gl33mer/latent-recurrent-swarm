@@ -101,3 +101,17 @@ train_swarm_conditioned.py (refuses non-smoke runs without an eligible LR),
 reports/phase2c-design.md (predeclared). Smoke runs pass all engineering checks in both
 modes for both models. NO Phase 2c training beyond smoke and NO test evaluation, per the
 "not yet stabilised" verdict from the stability study.
+
+## 2026-10-17 — Phase 2c fix-only engineering pass (branch experiment/phase2c-message-conditioned-reachability)
+
+Four fixes, no research-claim changes: (1) raw structural graph-hash uniqueness across
+roles/splits with canonicalised hashing and bounded failure; (2) dual-relation diagnostic
+made genuinely selector-independent (no COMM register/message embedding; Core B
+trajectory bit-identical under any message intervention; dual param count corrected to
+279,691; primary unchanged at 279,561); (3) training strictly separated from test
+evaluation (trainer is train/val-only; new manifest-driven evaluator implemented and
+unit-tested but NOT invoked; seed 99991 never generated); (4) trajectory metrics
+corrected to element-weighted means with terminal-node intermediate gate and exact
+final-only invariance; old magnitudes retracted via
+reports/phase2c-trajectory-metric-erratum.md. Combined suite 47 passed. No confirmatory
+training, no test evaluation. See reports/phase2c-fix-only-report.md.

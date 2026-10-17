@@ -293,7 +293,7 @@ log/env snapshot; artifact save gated behind validation gates:
 - Consequence per charter: Phase 2c proceeds as engineering + tests + smoke ONLY; no
   confirmatory multi-seed comparison; no Phase 2c test evaluation.
 - Report: reports/phase2b-stability-report.md; artifacts under
-  runs/20261016T231051Z_stability/ (metrics.jsonl, run summaries, checkpoints incl.
+  runs/20261016T225726Z_stability/ (metrics.jsonl, run summaries, checkpoints incl.
   failures, aggregate.json, summary.csv).
 
 ## Phase C — Phase 2c implementation, tests, smoke (branch experiment/phase2c-message-conditioned-reachability)
@@ -363,3 +363,22 @@ all recorded checkpoints present with matching SHA-256s; run dirs untouched.
   primary loss wiring with swap checks. Combined suite: 38 passed. Two test-fixture bugs
   found and fixed during development (a nondeterministic-distinctness fixture that could
   never terminate; an off-by-one proposal-count assertion).
+
+### Fix-only pass continued (commits 2-3): Fixes 3 & 4, erratum, docs
+
+- Commit `9257ad3`: Fix 3 (trainer train/val-only; `evaluate_phase2c_test.py` manifest-
+  driven evaluator implemented + unit-tested, NOT invoked; stop-gate re-verified refusing
+  with exit 2) and Fix 4 (element-weighted trajectory aggregation with terminal-node
+  metric, exact final-only bit-identity assertion, strengthened full-mode gate).
+  Combined suite 47 passed (7 + 11 + 29); smoke all four configs pass with corrected
+  metrics (primary/full step-1: graph-nodes 1.185e-01, terminal 2.932e-02; primary/final-only
+  and dual both modes exactly 0.0 where required).
+- `reports/phase2c-trajectory-metric-erratum.md`: retracts all previously reported
+  trajectory magnitudes (2c smoke values AND the per-batch-mean-based magnitudes in the
+  2b run/stability reports), documents the corrected element-weighted definition,
+  states raw traces were not persisted so historical values cannot be recomputed, and
+  preserves the structural conclusions (re-verified). New smoke values reported with
+  provenance as engineering-only orientation.
+- `reports/phase2c-fix-only-report.md`: full engineering report per charter §12.
+- Metadata correction: stability report's run-dir path fixed `231051Z` -> `225726Z`
+  (verified on disk) with a dated note appended; no numbers changed.

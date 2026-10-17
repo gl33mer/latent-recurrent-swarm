@@ -2,7 +2,7 @@
 
 **Branch:** `experiment/phase2b-stability-study` · **Design (predeclared, committed before
 any run):** `reports/phase2b-stability-design.md` at commit `d0fff86` · **Sweep commit:**
-`d0fff86` · **Run directory:** `runs/20261016T231051Z_stability/` (ignored; JSONL per
+`d0fff86` · **Run directory:** `runs/20261016T225726Z_stability/` (ignored; JSONL per
 epoch, per-run summaries, checkpoints incl. failures, sweep log)
 **Verdict: NO learning rate is eligible under the predeclared rule → the Phase 2b recipe
 is classified NOT YET STABILISED. No confirmatory Phase 2c comparison will be run.**
@@ -86,3 +86,7 @@ rather than contradicting either result. All original artifacts remain unchanged
   was permitted, so "not yet stabilised" means "not stabilised *within this grid*", not
   "unstable at any possible recipe".
 - Validation is reused for LR selection by design; no test data exists in this sweep.
+
+---
+
+**Metadata correction (2026-10-17, fix-only pass):** the run directory reference above originally read `runs/20261016T231051Z_stability/`, which was a typographical error; the actual sweep directory (verified on disk, containing all 18 per-run folders and `aggregate.json`) is `runs/20261016T225726Z_stability/`. No numbers, tables, or conclusions were changed.
