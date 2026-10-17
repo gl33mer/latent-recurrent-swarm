@@ -130,3 +130,13 @@ medians 4.68% (λ=0.5), 5.62% (λ=1.0), 2.47% (λ=2.0).
   (lr 2e-4, λ_msg 2.0)** pending owner review; no Phase 2c file, datum, or evaluation was
   touched: the seed-99991 split was never generated, `evaluate_phase2c_test.py` was never
   invoked, and no Phase 2c training occurred.
+
+---
+
+**Dated erratum (2026-10-17):** two statements in §5 were corrected by
+`reports/phase2b-msg-weight-study-erratum-2026-10-17.md` after independent recomputation
+from the raw run data: (E1) probe-gate failures at λ=0.5 are **3/6**, not 4/6; (E2) the
+instability medians (4.68% → 5.62% → 2.47%) are **non-monotonic** in λ_msg — only the
+total all-gate pass count (3/6 → 4/6 → 6/6) and the probe pass rate rise monotonically.
+The §2 run table, §3 selection arithmetic, and the selected candidate (λ_msg = 2.0) are
+unchanged.
