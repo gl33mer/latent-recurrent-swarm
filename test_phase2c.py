@@ -367,3 +367,245 @@ def test_generator_bounded_failure_on_exhaustion(monkeypatch):
     monkeypatch.setattr(cgt, "MAX_ATTEMPTS_PER_GRAPH", 5)
     with pytest.raises(RuntimeError, match="structurally unique"):
         cgt.generate_conditioned_benchmark(num_samples=8, seed=7)
+
+# ------------------- Fix 4: corrected trajectory aggregation (2026-10-17) -------------------
+
+import math
+import train_swarm_conditioned as trainer_mod
+from train_swarm_conditioned import evaluate_trajectory, _terminal_sensitivity_ok
+import evaluate_phase2c_test as evaluator_mod
+
+
+class _MockTrajModel:
+    """Deterministic mock returning fixed counterfactual traces; lets the aggregation
+    arithmetic be verified by hand independent of any real network."""
+
+    def __init__(self, traces_by_force):
+        self.traces = traces_by_force
+
+    def eval(self):
+        return self
+
+    def __call__(self, x_A, x_B, comm_mode="full", trace=True, force_message=None, **kw):
+        assert trace is True
+        return (None, None, None, None, None, self.traces[force_message])
+
+
+def _traj_loader(x_B, r0, r1):
+    n = x_B.size(0)
+    ds = torch.utils.data.TensorDataset(
+        torch.randn(n, 16, 32), x_B, torch.zeros(n, dtype=torch.long),
+        r0.clone(), r1.clone(), torch.zeros(n, dtype=torch.long))
+    return torch.utils.data.DataLoader(ds, batch_size=x_B.size(0))
+
+
+def test_trajectory_metric_batch_size_invariance():
+    torch.manual_seed(11)
+    model = LatentConditionedSwarm()
+    x_B, r0, r1 = _tiny_conditioned_batch(n=12)
+    ref = evaluate_trajectory(model, _traj_loader(x_B, r0, r1), "full")
+    split = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(torch.randn(12, 16, 32), x_B,
+                                       torch.zeros(12, dtype=torch.long), r0.clone(),
+                                       r1.clone(), torch.zeros(12, dtype=torch.long)),
+        batch_size=5, shuffle=False)
+    uneven = evaluate_trajectory(model, split, "full")
+    for key in ("graph_nodes_mean_abs_delta", "terminal_node_mean_abs_delta"):
+        for g in ("overall", "agree", "disagree"):
+            for t in range(9):
+                a, b = ref[key][g][t], uneven[key][g][t]
+                assert math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-9), \
+                    f"Batch-size dependence at {key}/{g}/step{t}: {a} vs {b}"
+    assert ref["sample_counts"] == uneven["sample_counts"]
+
+def test_trajectory_metric_hand_computed_weighted_subgroups():
+    traces_p = [torch.zeros(3, 16, 128) for _ in range(9)]
+    traces_m = [torch.zeros(3, 16, 128) for _ in range(9)]
+    # sample 0 (agree): delta 2.0 everywhere; sample 1 (disagree): 0.0; sample 2 (agree): 4.0
+    traces_p[1][0] = 2.0
+    traces_m[1][0] = 0.0
+    traces_p[1][2] = 4.0
+    x_B = torch.randn(3, 16, 64)
+    r0 = torch.tensor([0, 0, 1])
+    r1 = torch.tensor([0, 1, 1])  # sample0 agree, sample1 disagree, sample2 agree
+    model = _MockTrajModel({1.0: traces_p, -1.0: traces_m})
+    out = evaluate_trajectory(model, _traj_loader(x_B, r0, r1), "full")
+    # graph-node overall: (2*2048 + 0 + 4*2048) / (3*2048) = 2.0
+    assert math.isclose(out["graph_nodes_mean_abs_delta"]["overall"][1], 2.0, rel_tol=1e-9)
+    # agree group: (2*2048 + 4*2048) / (2*2048) = 3.0 ; disagree: 0.0
+    assert math.isclose(out["graph_nodes_mean_abs_delta"]["agree"][1], 3.0, rel_tol=1e-9)
+    assert out["graph_nodes_mean_abs_delta"]["disagree"][1] == 0.0
+    # terminal node: delta is constant across nodes, so identical values
+    assert math.isclose(out["terminal_node_mean_abs_delta"]["overall"][1], 2.0, rel_tol=1e-9)
+    assert math.isclose(out["terminal_node_mean_abs_delta"]["agree"][1], 3.0, rel_tol=1e-9)
+    assert out["sample_counts"] == {"overall": 3, "agree": 2, "disagree": 1}
+    assert _terminal_sensitivity_ok(out) is True  # strictly positive at intermediate step
+
+def test_trajectory_full_mode_terminal_sensitivity_deterministic():
+    torch.manual_seed(5)
+    model = LatentConditionedSwarm()
+    x_B = torch.zeros(4, 16, 64)
+    x_B[:, :, 48:] = torch.eye(16)
+    for i in range(15):
+        x_B[:, i, i + 1] = 1.0  # union = R0-like line in column block 0
+        x_B[:, i, 16 + i + 1] = 1.0
+    r0, r1 = torch.tensor([1, 0, 1, 0]), torch.tensor([0, 1, 1, 0])  # 2 disagree + 2 agree
+    out = evaluate_trajectory(model, _traj_loader(x_B, r0, r1), "full")
+    assert _terminal_sensitivity_ok(out), \
+        f"No terminal-node intermediate sensitivity: {out['terminal_node_mean_abs_delta']['overall']}"
+    assert any(v > 0 for v in out["graph_nodes_mean_abs_delta"]["overall"][1:8])
+
+def test_trajectory_final_only_exact_invariance():
+    torch.manual_seed(5)
+    model = LatentConditionedSwarm()
+    x_B, r0, r1 = _tiny_conditioned_batch(n=8)
+    out = evaluate_trajectory(model, _traj_loader(x_B, r0, r1), "final-only")
+    assert out["final_only_steps_1_7_exact_invariance"] is True
+    for t in range(1, 8):
+        assert out["graph_nodes_mean_abs_delta"]["overall"][t] == 0.0
+        assert out["terminal_node_mean_abs_delta"]["overall"][t] == 0.0
+    assert out["terminal_node_mean_abs_delta"]["overall"][8] > 0.0, \
+        "final-only step 8 should show message influence"
+
+def test_trajectory_rejects_nonfinite_and_empty_groups():
+    traces_p = [torch.zeros(2, 16, 128) for _ in range(9)]
+    traces_m = [torch.zeros(2, 16, 128) for _ in range(9)]
+    traces_p[3][0, 0, 0] = float("nan")
+    model = _MockTrajModel({1.0: traces_p, -1.0: traces_m})
+    x_B = torch.randn(2, 16, 64)
+    with pytest.raises(RuntimeError, match="Non-finite trajectory delta"):
+        evaluate_trajectory(model, _traj_loader(x_B, torch.tensor([0, 0]),
+                                                torch.tensor([0, 1])), "full")
+    # Empty disagreement group must fail explicitly, never divide by one silently.
+    ok_p = [torch.ones(2, 16, 128) for _ in range(9)]
+    ok_m = [torch.zeros(2, 16, 128) for _ in range(9)]
+    model2 = _MockTrajModel({1.0: ok_p, -1.0: ok_m})
+    with pytest.raises(RuntimeError, match="Empty agreement/disagreement"):
+        evaluate_trajectory(model2, _traj_loader(x_B, torch.tensor([0, 1]),
+                                                torch.tensor([0, 1])), "full")
+
+# ------------------- Fix 3: training/test separation (2026-10-17) -------------------
+
+def _tiny_conditioned_batch(n=8):
+    x_A = torch.randn(n, 16, 32)
+    x_B = torch.randn(n, 16, 64)
+    x_B[:, :, 48:] = torch.eye(16)
+    r0 = torch.randint(0, 2, (n,))
+    r1 = torch.randint(0, 2, (n,))
+    b_A = torch.randint(0, 2, (n,))
+    Y = torch.where(b_A == 0, r0, r1)
+    return x_B, r0, r1  # x_A/Y used by callers that need them
+
+def test_trainer_generates_only_train_and_val(monkeypatch):
+    import data.conditioned_graph_task as cgt
+    real = cgt.generate_conditioned_benchmark
+    def guard(num_samples, seed, existing_hashes=None, **kw):
+        assert seed != 99991, "The predeclared test split must never be generated by training."
+        return real(num_samples=num_samples, seed=seed, existing_hashes=existing_hashes)
+    monkeypatch.setattr(cgt, "generate_conditioned_benchmark", guard)
+    monkeypatch.setattr(trainer_mod, "generate_conditioned_benchmark", guard)
+    loaders = trainer_mod.build_loaders(seed=42)
+    assert len(loaders) == 2, f"Trainer must produce only train and val loaders, got {len(loaders)}"
+    src = open("train_swarm_conditioned.py").read()
+    assert 'SPLIT_SEEDS["test"]' not in src, "Trainer source must not reference the test split"
+    # (The seed value may appear in explanatory comments; what must never appear is a
+    # generation/evaluation call path for it, guarded above and by the SPLIT_SEEDS check.)
+
+def test_smoke_path_never_builds_test_split(monkeypatch):
+    calls = {"test_seed": 0}
+    real = trainer_mod.generate_conditioned_benchmark
+    def tiny_builder(num_samples, seed, existing_hashes=None, **kw):
+        if seed == 99991:
+            calls["test_seed"] += 1
+            raise AssertionError("smoke attempted to generate the test split")
+        n = 8
+        x_A = torch.randn(n, 16, 32)
+        x_B = torch.randn(n, 16, 64)
+        x_B[:, :, 48:] = torch.eye(16)
+        r0, r1 = torch.randint(0, 2, (n,)), torch.randint(0, 2, (n,))
+        b_A = torch.randint(0, 2, (n,))
+        Y = torch.where(b_A == 0, r0, r1)
+        return torch.utils.data.TensorDataset(x_A, x_B, b_A, r0, r1, Y), {f"h{seed}{i}" for i in range(3 * n)}
+    monkeypatch.setattr(trainer_mod, "generate_conditioned_benchmark", tiny_builder)
+    args = trainer_mod.parse_args(["--mode", "full", "--model", "primary", "--smoke"])
+    trainer_mod.train_phase2c(args)  # must complete without touching seed 99991
+    assert calls["test_seed"] == 0
+
+def test_evaluator_rejects_unfrozen_missing_and_mismatch(tmp_path):
+    manifest = {"kind": "phase2c_test_evaluation_manifest", "frozen": True,
+                "created_utc": "2026-10-17T00:00:00Z", "source_commit": "abc123",
+                "split_seed": 99991,
+                "entries": [{"model": "primary", "mode": "full", "seed": 42,
+                             "checkpoint": str(tmp_path / "ck.pt"),
+                             "checkpoint_sha256": "0" * 64,
+                             "phase1_checkpoint": "checkpoint_phase1.pt",
+                             "phase1_checkpoint_sha256": _phase1_sha(),
+                             "config": {"lr": 8e-4, "epochs": 20}}]}
+    import json as _json
+    p = tmp_path / "m.json"
+    p.write_text(_json.dumps(manifest))
+    with pytest.raises(RuntimeError, match="Checkpoint missing"):
+        evaluator_mod.run_evaluation(str(p), str(tmp_path / "out"))
+    # Create a real checkpoint but record a wrong checksum.
+    torch.save(LatentConditionedSwarm().state_dict(), tmp_path / "ck.pt")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        evaluator_mod.run_evaluation(str(p), str(tmp_path / "out"))
+    # Correct checksum but unfrozen manifest -> refuse.
+    manifest["entries"][0]["checkpoint_sha256"] = evaluator_mod._sha256(str(tmp_path / "ck.pt"))
+    manifest["frozen"] = False
+    p.write_text(_json.dumps(manifest))
+    with pytest.raises(RuntimeError, match="not declared frozen"):
+        evaluator_mod.run_evaluation(str(p), str(tmp_path / "out"))
+    # Ambiguity: duplicate entries.
+    manifest["frozen"] = True
+    manifest["entries"].append(dict(manifest["entries"][0]))
+    p.write_text(_json.dumps(manifest))
+    with pytest.raises(RuntimeError, match="Ambiguous manifest"):
+        evaluator_mod.run_evaluation(str(p), str(tmp_path / "out"))
+
+def test_evaluator_end_to_end_on_mocked_split(tmp_path, monkeypatch):
+    """The evaluator runs end-to-end on a TINY mocked split; the real seed-99991 split is
+    never generated (the builder is replaced). The evaluator itself remains uninvoked in
+    any real evaluation during this fix-only task."""
+    torch.manual_seed(0)
+    primary = LatentConditionedSwarm()
+    primary.load_phase1_warm_start(torch.load("checkpoint_phase1.pt",
+                                              map_location="cpu", weights_only=True))
+    ck = tmp_path / "ck.pt"
+    torch.save(primary.state_dict(), ck)
+    def tiny_split(num_samples, seed, existing_hashes=None, **kw):
+        n = 8
+        x_A = torch.randn(n, 16, 32)
+        x_B = torch.randn(n, 16, 64)
+        x_B[:, :, 48:] = torch.eye(16)
+        r0, r1 = torch.randint(0, 2, (n,)), torch.randint(0, 2, (n,))
+        b_A = torch.randint(0, 2, (n,))
+        Y = torch.where(b_A == 0, r0, r1)
+        return (torch.utils.data.TensorDataset(x_A, x_B, b_A, r0, r1, Y),
+                {f"t{i}" for i in range(3 * n)})
+    monkeypatch.setattr(evaluator_mod, "generate_conditioned_benchmark", tiny_split)
+    import json as _json
+    manifest = {"kind": "phase2c_test_evaluation_manifest", "frozen": True,
+                "created_utc": "2026-10-17T00:00:00Z", "source_commit": "fixpass",
+                "split_seed": 99991,
+                "entries": [{"model": "primary", "mode": "full", "seed": 42,
+                             "checkpoint": str(ck),
+                             "checkpoint_sha256": evaluator_mod._sha256(str(ck)),
+                             "phase1_checkpoint": "checkpoint_phase1.pt",
+                             "phase1_checkpoint_sha256": _phase1_sha(),
+                             "config": {"lr": 8e-4, "epochs": 20}}]}
+    p = tmp_path / "m.json"
+    p.write_text(_json.dumps(manifest))
+    out = tmp_path / "out"
+    evaluator_mod.run_evaluation(str(p), str(out))
+    assert (out / "test_summary.csv").exists()
+    assert (out / "test_metrics_primary_full_seed42.json").exists()
+    assert (out / "predictions_primary_full_seed42.pt").exists()
+
+def _phase1_sha():
+    import hashlib
+    h = hashlib.sha256()
+    with open("checkpoint_phase1.pt", "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()

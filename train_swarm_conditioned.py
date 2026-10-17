@@ -75,18 +75,16 @@ def compute_loss(model_kind, outputs, batch, crit, crit_msg):
          + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
 
 
-def build_loaders(seed, include_test):
+def build_loaders(seed):
+    """Training/validation ONLY. The confirmatory Phase 2c test split (seed 99991) is
+    never generated here; held-out evaluation is the exclusive job of the separate,
+    explicitly invoked evaluator `evaluate_phase2c_test.py` (Fix 3, 2026-10-17)."""
     train_ds, train_h = generate_conditioned_benchmark(num_samples=4000, seed=SPLIT_SEEDS["train"])
     val_ds, val_h = generate_conditioned_benchmark(num_samples=1000, seed=SPLIT_SEEDS["validation"],
                                                    existing_hashes=train_h)
-    loaders = [DataLoader(train_ds, batch_size=64, shuffle=True,
-                          generator=torch.Generator().manual_seed(9000 + seed)),
-               DataLoader(val_ds, batch_size=128, shuffle=False)]
-    if include_test:
-        test_ds, _ = generate_conditioned_benchmark(num_samples=1000, seed=SPLIT_SEEDS["test"],
-                                                    existing_hashes=train_h | val_h)
-        loaders.append(DataLoader(test_ds, batch_size=128, shuffle=False))
-    return loaders
+    return [DataLoader(train_ds, batch_size=64, shuffle=True,
+                       generator=torch.Generator().manual_seed(9000 + seed)),
+            DataLoader(val_ds, batch_size=128, shuffle=False)]
 
 
 def _acc(preds, labels, mask=None):
@@ -128,7 +126,7 @@ def evaluate_conditioned(model, loader, comm_mode, model_kind):
             "disagreement_subset": _acc(P, Y, disagree),
             "sender_probe_overall": _acc(m_bits, bA),
             "sender_probe_by_bA": {str(a): _acc(m_bits, bA, bA == a) for a in (0, 1)},
-            "_pred": P, "_bA": bA, "_r0": r0, "_r1": r1, "_disagree": disagree, "_agree": agree,
+            "_pred": P, "_Y": Y, "_bA": bA, "_r0": r0, "_r1": r1, "_disagree": disagree, "_agree": agree,
         }
 
 
@@ -186,20 +184,81 @@ def evaluate_zero_message(model, loader, comm_mode, model_kind):
 
 
 def evaluate_trajectory(model, loader, comm_mode):
+    """Corrected trajectory-sensitivity metrics (Fix 4, 2026-10-17).
+
+    For identical inputs, model weights and eval mode, run paired counterfactual traces
+    with forced m=+1 and m=-1 and report TRUE element-weighted means:
+        mean_abs_delta = sum(|delta|) / number_of_elements_included
+    per recurrent step (0 = post-encoder, 1..8 = after each step), over
+    - all 16 ordinary graph nodes and all 128 latent dims (`graph_nodes_mean_abs_delta`),
+    - the terminal node 15 only (`terminal_node_mean_abs_delta`),
+    overall and conditioned on relation agreement/disagreement (the Phase 2c analogue of
+    the b_B grouping), with sample counts per condition. The previous implementation
+    summed per-batch MEANS and divided by sample count, which understates the magnitude
+    by a factor of about the batch size; old values are retracted for quantitative use
+    (see reports/phase2c-trajectory-metric-erratum.md).
+
+    In final-only mode, ordinary graph-node states must be BIT-IDENTICAL across the two
+    messages through step 7; this is asserted directly via exact tensor equality and
+    reported as a boolean (step 8 may differ). Empty conditioning groups and non-finite
+    deltas raise explicit errors. The COMM register's own message-dependent initial state
+    is deliberately excluded: only ordinary graph-node states are measured."""
     model.eval()
-    sums = {"overall": [0.0] * 9, "disagree": [0.0] * 9, "agree": [0.0] * 9}
-    counts = {"overall": 0, "disagree": 0, "agree": 0}
+    groups = ("overall", "agree", "disagree")
+    sum_abs = {g: {"graph": [0.0] * 9, "terminal": [0.0] * 9} for g in groups}
+    elem = {g: {"graph": [0] * 9, "terminal": [0] * 9} for g in groups}
+    samples = {g: 0 for g in groups}
+    invariance_exact = [] if comm_mode == "final-only" else None
     with torch.no_grad():
         for x_A, x_B, b_A, r0, r1, Y in loader:
             tp = model(x_A, x_B, comm_mode=comm_mode, trace=True, force_message=1.0)[-1]
             tn = model(x_A, x_B, comm_mode=comm_mode, trace=True, force_message=-1.0)[-1]
-            d = [(tp[t] - tn[t]).abs() for t in range(9)]
             dis = (r0 != r1)
-            for key, mask in (("overall", torch.ones_like(dis)), ("disagree", dis), ("agree", ~dis)):
-                for t in range(9):
-                    sums[key][t] += float(d[t][mask].mean()) if bool(mask.any()) else 0.0
-                counts[key] += int(mask.sum())
-    return {k: {t: s / max(counts[k], 1) for t, s in enumerate(v)} for k, v in sums.items()}
+            group_masks = {"overall": torch.ones_like(dis), "agree": ~dis, "disagree": dis}
+            for t in range(9):
+                delta = (tp[t] - tn[t]).abs()
+                if not torch.isfinite(delta).all():
+                    raise RuntimeError(f"Non-finite trajectory delta at step {t}; refusing "
+                                       "to report a meaningless metric.")
+                if comm_mode == "final-only" and t <= 7:
+                    invariance_exact.append(bool(torch.equal(tp[t], tn[t])))
+                n_nodes, d_dim = delta.shape[1], delta.shape[2]
+                for g, mask in group_masks.items():
+                    sel = delta[mask]                      # [n_sel, 16, 128]
+                    n_sel = int(mask.sum())
+                    if n_sel == 0:
+                        continue
+                    sum_abs[g]["graph"][t] += float(sel.sum())
+                    elem[g]["graph"][t] += n_sel * n_nodes * d_dim
+                    sum_abs[g]["terminal"][t] += float(sel[:, -1, :].sum())
+                    elem[g]["terminal"][t] += n_sel * d_dim
+            for g, mask in group_masks.items():
+                samples[g] += int(mask.sum())
+    if samples["overall"] == 0:
+        raise RuntimeError("Empty evaluation set for trajectory sensitivity.")
+    if samples["agree"] == 0 or samples["disagree"] == 0:
+        raise RuntimeError("Empty agreement/disagreement conditioning group; refusing to "
+                           "report a silently-divided metric.")
+    out = {
+        "graph_nodes_mean_abs_delta": {
+            g: [sum_abs[g]["graph"][t] / elem[g]["graph"][t] if elem[g]["graph"][t] else 0.0
+                for t in range(9)] for g in groups},
+        "terminal_node_mean_abs_delta": {
+            g: [sum_abs[g]["terminal"][t] / elem[g]["terminal"][t] if elem[g]["terminal"][t] else 0.0
+                for t in range(9)] for g in groups},
+        "sample_counts": samples,
+    }
+    if comm_mode == "final-only":
+        out["final_only_steps_1_7_exact_invariance"] = all(invariance_exact)
+    return out
+
+
+def _terminal_sensitivity_ok(traj):
+    """Full-mode mechanism criterion: terminal-node (z_B[15]) sensitivity strictly > 0 at
+    at least one intermediate step (1..7). No floating tolerance: CPU float32 arithmetic
+    here is deterministic, and any positive attention weight on the COMM key makes the
+    element mean strictly positive."""
+    return any(v > 0.0 for v in traj["terminal_node_mean_abs_delta"]["overall"][1:8])
 
 
 def apply_gates(val_metrics, cf, zero, traj, comm_mode):
@@ -221,8 +280,10 @@ def apply_gates(val_metrics, cf, zero, traj, comm_mode):
         failed.append("switch_consistency<85%")
     if cf["selector_invariance_agreement"] < 0.85:
         failed.append("selector_invariance<85%")
-    if comm_mode == "full" and not any(traj["overall"][t] > 0.0 for t in range(1, 8)):
-        failed.append("no_intermediate_trajectory_sensitivity")
+    if comm_mode == "full" and not _terminal_sensitivity_ok(traj):
+        failed.append("no_intermediate_terminal_node_sensitivity")
+    if comm_mode == "final-only" and not traj.get("final_only_steps_1_7_exact_invariance", False):
+        failed.append("final_only_graph_states_not_bit_identical_steps_1_7")
     return {"passed": not failed, "failed_criteria": failed}
 
 
@@ -233,11 +294,10 @@ def train_phase2c(args):
     print(f"Phase 2c training: model={model_kind}, mode={comm_mode}, seed={args.seed}, "
           f"epochs={args.epochs}, lr={args.lr}, git={_git_commit()[:12]}, smoke={args.smoke}")
 
-    loaders = build_loaders(args.seed, include_test=not args.smoke)
+    loaders = build_loaders(args.seed)
     train_loader, val_loader = loaders[0], loaders[1]
-    test_loader = loaders[2] if len(loaders) > 2 else None
-    print(f"Datasets: train=4000, val=1000{', test=1000' if test_loader else ', test=NOT GENERATED (smoke)'}"
-          f" (seeds {SPLIT_SEEDS})")
+    print("Datasets: train=4000, val=1000, test=NOT GENERATED (held-out evaluation is "
+          "the separate evaluator's job)" f" (seeds train/val {SPLIT_SEEDS['train']}/{SPLIT_SEEDS['validation']})")
 
     if model_kind == "primary":
         model = LatentConditionedSwarm()
@@ -275,8 +335,10 @@ def train_phase2c(args):
         ev = evaluate_conditioned(model, val_loader, comm_mode, model_kind)
         print(f"Smoke val overall (meaningless small sample): {ev['overall']*100:.1f}%")
         traj = evaluate_trajectory(model, val_loader, comm_mode)
-        print(f"Smoke trajectory step1 overall |Δz|: {traj['overall'][1]:.3e} "
-              f"(final-only must be 0.0)")
+        print(f"Smoke trajectory step1 graph-nodes mean |Δz|: "
+              f"{traj['graph_nodes_mean_abs_delta']['overall'][1]:.3e}; terminal node: "
+              f"{traj['terminal_node_mean_abs_delta']['overall'][1]:.3e}"
+              + (" (final-only: both must be exactly 0.0)" if comm_mode == "final-only" else ""))
         print("Smoke checklist: engineering checks passed. NOT research results.")
         return
 
@@ -309,23 +371,19 @@ def train_phase2c(args):
     print(f"Zero-message overall {zero['zero_message_overall']*100:.2f}% | "
           f"disagreement {zero['zero_message_disagreement']*100:.2f}%")
     print("Counterfactuals:", {k: f"{v*100:.2f}%" for k, v in cf.items()})
-    print("Trajectory overall per step:",
-          " ".join(f"{traj['overall'][t]:.2e}" for t in range(9)))
+    print("Trajectory graph-nodes mean |Δz| per step (overall):",
+          " ".join(f"{v:.2e}" for v in traj["graph_nodes_mean_abs_delta"]["overall"]))
+    print("Trajectory terminal-node mean |Δz| per step (overall):",
+          " ".join(f"{v:.2e}" for v in traj["terminal_node_mean_abs_delta"]["overall"]))
     if comm_mode == "final-only":
-        leak = max(abs(traj["overall"][t]) for t in range(1, 8))
-        print(f"final-only steps1-7 invariance check: max |Δz| = {leak:.2e} (expected 0)")
+        print(f"final-only steps 1-7 exact bit-identity: "
+              f"{traj['final_only_steps_1_7_exact_invariance']} (required: True)")
     status = apply_gates(val_metrics, cf, zero, traj, comm_mode) \
         if model_kind == "primary" else {"passed": None, "failed_criteria": ["diagnostic-model-no-gates"]}
     print(f"GATE STATUS: {status}")
-
-    test_metrics = None
-    if test_loader is not None:
-        print("\n--- Final Held-Out Test Evaluation (once, frozen protocol) ---")
-        test_metrics = evaluate_conditioned(model, test_loader, comm_mode, model_kind)
-        t_cf = evaluate_counterfactuals(model, test_loader, comm_mode, model_kind)
-        t_zero = evaluate_zero_message(model, test_loader, comm_mode, model_kind)
-        print(f"Test overall {test_metrics['overall']*100:.2f}% | disagree "
-              f"{test_metrics['disagreement_subset']*100:.2f}% | zero {t_zero['zero_message_overall']*100:.2f}%")
+    print("NOTE: no test evaluation occurred and no test split exists; held-out "
+          "evaluation must be run via the separate manifest-driven evaluator "
+          "evaluate_phase2c_test.py after all configuration is frozen.")
 
     if args.run_dir:
         os.makedirs(args.run_dir, exist_ok=True)
@@ -342,8 +400,7 @@ def train_phase2c(args):
             "validation": {k: v for k, v in val_metrics.items() if not k.startswith("_")},
             "counterfactuals": cf, "zero_message": zero,
             "trajectory_sensitivity": traj,
-            "test": ({k: v for k, v in test_metrics.items() if not k.startswith("_")}
-                     if test_metrics else None),
+            "test": "NOT EVALUATED (separate evaluator required)",
             "checkpoint": ckpt, "checkpoint_sha256": sha,
             "saved_at_utc": datetime.now(timezone.utc).isoformat(),
         }
