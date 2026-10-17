@@ -58,6 +58,23 @@ def _sha256(path):
     return h.hexdigest()
 
 
+def compute_loss(model_kind, outputs, batch, crit, crit_msg):
+    """Predeclared objective wiring (reports/phase2c-design.md §6), factored out for
+    testability. Primary: selected-task CE on Y + 0.5·aux_A CE + 0.5·msg BCE.
+    Dual diagnostic: r0 head CE against r0, r1 head CE against r1 (relation heads are
+    supervised ONLY with their own relation labels — never with Y, so late-selection
+    candidates stay relation-pure), + 0.5·aux_A CE + 0.5·msg BCE. The discrete
+    selection itself is not part of any loss; the sender's gradient path is the msg BCE."""
+    _, _, b_A, r0, r1, Y = batch
+    if model_kind == "primary":
+        logits, raw_m, aux_A, m = outputs
+        return crit(logits, Y) + 0.5 * crit(aux_A, b_A) \
+             + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
+    r0_logits, r1_logits, raw_m, aux_logits_A, m = outputs
+    return crit(r0_logits, r0) + crit(r1_logits, r1) + 0.5 * crit(aux_logits_A, b_A) \
+         + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
+
+
 def build_loaders(seed, include_test):
     train_ds, train_h = generate_conditioned_benchmark(num_samples=4000, seed=SPLIT_SEEDS["train"])
     val_ds, val_h = generate_conditioned_benchmark(num_samples=1000, seed=SPLIT_SEEDS["validation"],
@@ -242,16 +259,13 @@ def train_phase2c(args):
         train_loader = [b for i, b in enumerate(train_loader) if i < 2]
         val_loader = [b for i, b in enumerate(val_loader) if i < 2]
         model.train()
-        for x_A, x_B, b_A, r0, r1, Y in train_loader:
+        for batch in train_loader:
             optimizer.zero_grad()
             if model_kind == "primary":
-                logits, raw_m, aux_A, _ = model(x_A, x_B, comm_mode=comm_mode)
-                loss = crit(logits, Y) + 0.5 * crit(aux_A, b_A) \
-                     + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
+                outputs = model(batch[0], batch[1], comm_mode=comm_mode)
             else:
-                r0l, r1l, raw_m, aux_A, _ = model(x_A, x_B, comm_mode=comm_mode)
-                loss = crit(r0l, r0) + crit(r1l, r1) + 0.5 * crit(aux_A, b_A) \
-                     + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
+                outputs = model(batch[0], batch[1], comm_mode=comm_mode)
+            loss = compute_loss(model_kind, outputs, batch, crit, crit_msg)
             assert torch.isfinite(loss).all(), "Non-finite loss in smoke"
             loss.backward()
             optimizer.step()
@@ -269,16 +283,10 @@ def train_phase2c(args):
     print(f"Training Phase 2c ({model_kind}/{comm_mode}) at T_A=8, T_B=8...")
     for epoch in range(1, args.epochs + 1):
         model.train()
-        for x_A, x_B, b_A, r0, r1, Y in train_loader:
+        for batch in train_loader:
             optimizer.zero_grad()
-            if model_kind == "primary":
-                logits, raw_m, aux_A, _ = model(x_A, x_B, comm_mode=comm_mode)
-                loss = crit(logits, Y) + 0.5 * crit(aux_A, b_A) \
-                     + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
-            else:
-                r0l, r1l, raw_m, aux_A, _ = model(x_A, x_B, comm_mode=comm_mode)
-                loss = crit(r0l, r0) + crit(r1l, r1) + 0.5 * crit(aux_A, b_A) \
-                     + 0.5 * crit_msg(raw_m.squeeze(-1), b_A.float())
+            outputs = model(batch[0], batch[1], comm_mode=comm_mode)
+            loss = compute_loss(model_kind, outputs, batch, crit, crit_msg)
             loss.backward()
             optimizer.step()
         if epoch % 5 == 0 or epoch == args.epochs:

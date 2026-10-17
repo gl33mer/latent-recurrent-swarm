@@ -12,14 +12,16 @@ import torch.nn as nn
 from model.swarm import LatentSwarm
 from model.swarm_comm import LatentCommSwarm
 from model.swarm_conditioned import LatentConditionedSwarm, LatentDualRelationSwarm
-from data.conditioned_graph_task import generate_conditioned_benchmark, benchmark_statistics, SPLIT_SEEDS
+from data.conditioned_graph_task import (generate_conditioned_benchmark, benchmark_statistics,
+                                         SPLIT_SEEDS, canonical_raw_graph_hash)
+from train_swarm_conditioned import compute_loss
 from data.graph_task import _shortest_path_length
 
 def setup_module():
     torch.set_num_threads(4)
 
 EXPECTED_PRIMARY_PARAMS = 279_561
-EXPECTED_DUAL_PARAMS = 280_075
+EXPECTED_DUAL_PARAMS = 279_691  # corrected: no msg_embedder, no COMM token in the diagnostic
 
 def _line_features(batch_size=1):
     line = torch.zeros(batch_size, 16, 16)
@@ -218,9 +220,150 @@ def test_dual_relation_selection_semantics():
     # Selection depends only on head outputs and the bit — never on labels.
     dual = LatentDualRelationSwarm()
     top = {n.split(".")[0] for n, _ in dual.named_parameters()}
-    assert {"r0_head", "r1_head"}.issubset(top)
-    assert float(dual.r0_head[1].weight.sum()) != 0.0  # heads are fresh, not the decoder
-    with torch.no_grad():
-        x_A, x_B = torch.randn(2, 16, 32), _line_features(2)
-        r0l, r1l, raw_m, _, _ = dual(x_A, x_B, trace=False)
-    assert r0l.shape == (2, 2) and r1l.shape == (2, 2)
+    assert {"r0_head", "r1_head", "msg_encoder"}.issubset(top)
+    # No unused message-embedding / COMM parameters remain in the diagnostic.
+    assert not any("msg_embedder" in n or "comm_token" in n for n, _ in dual.named_parameters())
+    assert not any("learned_comm" in n for n, _ in dual.named_parameters())
+
+    torch.manual_seed(3)
+    x_A = torch.randn(4, 16, 32)
+    x_B = torch.randn(4, 16, 64)
+    base = dual(x_A, x_B, trace=True)          # emitted message polarity
+    flipped = dual(x_A, x_B, flip_message=True, trace=True)
+    forced_p = dual(x_A, x_B, force_message=1.0, trace=True)
+    forced_m = dual(x_A, x_B, force_message=-1.0, trace=True)
+    # Candidates and the whole Core B trace are bit-identical under ANY message
+    # intervention; only the selection input changes.
+    assert torch.equal(base[0], flipped[0]) and torch.equal(base[1], flipped[1])
+    assert torch.equal(base[0], forced_p[0]) and torch.equal(base[1], forced_p[1])
+    assert torch.equal(base[0], forced_m[0]) and torch.equal(base[1], forced_m[1])
+    assert all(torch.equal(a, b) for a, b in zip(base[5], flipped[5]))
+    assert all(torch.equal(a, b) for a, b in zip(base[5], forced_p[5]))
+    assert all(torch.equal(a, b) for a, b in zip(base[5], forced_m[5]))
+    assert torch.equal(flipped[4], -base[4])          # the bit itself does flip
+    # Selection changes with the bit while candidates stay exactly unchanged.
+    sel_p = dual.select(base[0], base[1], torch.full((4, 1), 1.0))
+    sel_m = dual.select(base[0], base[1], torch.full((4, 1), -1.0))
+    assert not torch.equal(sel_p, sel_m)
+
+def test_dual_gradient_paths_and_loss_wiring():
+    """Dual loss: relation heads supervised with their OWN labels (never Y); aux_A and
+    msg BCE give Core A / sender gradients; the discrete selection is not in the loss."""
+    torch.manual_seed(42)
+    dual = LatentDualRelationSwarm()
+    crit, crit_msg = nn.CrossEntropyLoss(), nn.BCEWithLogitsLoss()
+    batch = (torch.randn(8, 16, 32), torch.randn(8, 16, 64),
+             torch.randint(0, 2, (8,)), torch.randint(0, 2, (8,)),
+             torch.randint(0, 2, (8,)), torch.randint(0, 2, (8,)))
+    outputs = dual(batch[0], batch[1])
+    loss = compute_loss("dual", outputs, batch, crit, crit_msg)
+    # Manual recomputation must match the wired loss exactly.
+    r0l, r1l, raw_m, aux_A, _ = outputs
+    expected = crit(r0l, batch[3]) + crit(r1l, batch[4]) + 0.5 * crit(aux_A, batch[2]) \
+             + 0.5 * crit_msg(raw_m.squeeze(-1), batch[2].float())
+    assert torch.equal(loss, expected), "Dual loss wiring deviates from the predeclared objective"
+    # A swapped wiring (r0 head against r1 labels) must give a different value on this batch.
+    swapped = crit(r0l, batch[4]) + crit(r1l, batch[3]) + 0.5 * crit(aux_A, batch[2]) \
+            + 0.5 * crit_msg(raw_m.squeeze(-1), batch[2].float())
+    assert not torch.equal(loss, swapped), "Swap check degenerate; pick a batch with r0 != r1 labels"
+    loss.backward()
+    none = [n for n, p in dual.named_parameters() if p.grad is None]
+    assert none == [], f"Dual parameters without gradient: {none}"
+    # Sender gradient path exists via msg BCE (selection is discrete and not differentiated).
+    assert dual.msg_encoder.weight.grad is not None and float(dual.msg_encoder.weight.grad.abs().sum()) > 0
+
+def test_primary_loss_wiring():
+    torch.manual_seed(42)
+    primary = LatentConditionedSwarm()
+    crit, crit_msg = nn.CrossEntropyLoss(), nn.BCEWithLogitsLoss()
+    batch = (torch.randn(8, 16, 32), torch.randn(8, 16, 64),
+             torch.randint(0, 2, (8,)), torch.randint(0, 2, (8,)),
+             torch.randint(0, 2, (8,)), torch.randint(0, 2, (8,)))
+    outputs = primary(batch[0], batch[1])
+    loss = compute_loss("primary", outputs, batch, crit, crit_msg)
+    logits, raw_m, aux_A, _ = outputs
+    expected = crit(logits, batch[5]) + 0.5 * crit(aux_A, batch[2]) \
+             + 0.5 * crit_msg(raw_m.squeeze(-1), batch[2].float())
+    assert torch.equal(loss, expected), "Primary loss wiring deviates from the predeclared objective"
+    # Selected-task loss must use Y (the selector rule), not r0 or r1 directly.
+    against_r0 = crit(logits, batch[3]) + 0.5 * crit(aux_A, batch[2]) \
+               + 0.5 * crit_msg(raw_m.squeeze(-1), batch[2].float())
+    assert not torch.equal(loss, against_r0), "Swap check degenerate; pick a batch with Y != r0 somewhere"
+
+# ------------------------- Fix 1: raw graph-hash uniqueness (2026-10-17) -------------------------
+
+def test_raw_hash_uniqueness_within_split_across_roles():
+    ds, hashes = generate_conditioned_benchmark(num_samples=80, seed=SPLIT_SEEDS["train"])
+    assert len(hashes) == 3 * 80, "Returned set must hold exactly one raw hash per graph"
+    assert all(":" not in h for h in hashes), "Uniqueness keys must not contain role prefixes"
+    x_A, x_B = ds.tensors[0], ds.tensors[1]
+    # Recomputed raw hashes of the stored matrices must reproduce the returned set.
+    recomputed = set()
+    for i in range(len(x_A)):
+        recomputed.add(canonical_raw_graph_hash(x_A[i, :, :16]))
+        recomputed.add(canonical_raw_graph_hash(x_B[i, :, 16:32]))
+        recomputed.add(canonical_raw_graph_hash(x_B[i, :, 32:48]))
+    assert recomputed == hashes
+
+def test_raw_hash_disjoint_across_small_fixtures():
+    _, h1 = generate_conditioned_benchmark(num_samples=16, seed=101)
+    _, h2 = generate_conditioned_benchmark(num_samples=16, seed=102, existing_hashes=h1)
+    _, h3 = generate_conditioned_benchmark(num_samples=16, seed=103, existing_hashes=h1 | h2)
+    assert len(h1) == len(h2) == len(h3) == 3 * 16
+    assert not (h1 & h2) and not (h1 & h3) and not (h2 & h3)
+
+def test_canonical_hash_is_dtype_and_layout_invariant():
+    adj = torch.zeros(16, 16)
+    for i in range(15):
+        adj[i, i + 1] = 1.0
+    h_f32 = canonical_raw_graph_hash(adj)
+    h_f64 = canonical_raw_graph_hash(adj.to(torch.float64))
+    h_noncontig = canonical_raw_graph_hash(adj.t().contiguous().t())  # same values, transposed view made strided then re-strided
+    h_gpu_like = canonical_raw_graph_hash(adj.clone())
+    assert h_f32 == h_f64 == h_noncontig == h_gpu_like
+    other = adj.clone()
+    other[0, 15] = 1.0
+    assert canonical_raw_graph_hash(other) != h_f32
+
+def test_generator_rejects_repeated_raw_graphs_across_roles(monkeypatch):
+    """Deterministic focused test: a fixed sampler emitting repeats forces the generator
+    to reject duplicate raw hashes regardless of role and keep sampling. The pool holds
+    40 provably distinct graphs for 24 slots, so repeats are rejected but exhaustion
+    never occurs."""
+    import data.conditioned_graph_task as cgt
+    pairs = [(a, b) for a in range(0, 4) for b in range(a + 2, 16)][:40]  # b>=a+2: never a line edge
+    assert len(set(pairs)) == 40
+    graphs = []
+    for (a, b) in pairs:
+        g = torch.zeros(16, 16)
+        for i in range(15):
+            g[i, i + 1] = 1.0
+        g[a, b] = 1.0
+        graphs.append(g)
+    assert len({canonical_raw_graph_hash(g) for g in graphs}) == 40, "fixture graphs must be distinct"
+    # Sequence proposes each of the 24 needed graphs exactly twice: the first proposal
+    # is accepted, the repeat (under the next role) must be rejected. 48 calls total.
+    sequence = [g for g in graphs[:24] for _ in (0, 1)]
+    calls = {"n": 0}
+    def fake_sampler(num_nodes, force_reachable, rng):
+        g = sequence[calls["n"] % len(sequence)]
+        calls["n"] += 1
+        return g.clone(), "unused"
+    monkeypatch.setattr(cgt, "_sample_matched_dag", fake_sampler)
+    ds, hashes = cgt.generate_conditioned_benchmark(num_samples=8, seed=7)
+    assert len(hashes) == 3 * 8
+    # Acceptances occur at odd calls, rejections at even calls; the 24th acceptance
+    # (call 47) completes the dataset before g24's repeat would be proposed.
+    assert calls["n"] == 2 * 3 * 8 - 1, "Unexpected proposal pattern"
+
+def test_generator_bounded_failure_on_exhaustion(monkeypatch):
+    import data.conditioned_graph_task as cgt
+    def constant_sampler(num_nodes, force_reachable, rng):
+        g = torch.zeros(16, 16)
+        for i in range(15):
+            g[i, i + 1] = 1.0
+        return g.clone(), "unused"
+    monkeypatch.setattr(cgt, "_sample_matched_dag", constant_sampler)
+    monkeypatch.setattr(cgt, "MAX_ATTEMPTS_PER_GRAPH", 5)
+    with pytest.raises(RuntimeError, match="structurally unique"):
+        cgt.generate_conditioned_benchmark(num_samples=8, seed=7)

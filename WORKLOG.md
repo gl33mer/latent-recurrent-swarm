@@ -334,3 +334,32 @@ log/env snapshot; artifact save gated behind validation gates:
 - `reports/phase2c-run-report.md` written: engineering+smoke status only; task/scientific
   status NOT RUN per the stability stop-gate; test split 99991 never generated (untouched);
   recommended next action = dedicated optimisation study first.
+
+## Fix-only pass (charter: phase2c_fix_only_agent_task.md @ main fcf20d7)
+
+Run dir: runs/20261017T060908Z_phase2c_fix_only/. Starting state: branch
+experiment/phase2c-message-conditioned-reachability @ fe87e1f, clean, synced with origin;
+all recorded checkpoints present with matching SHA-256s; run dirs untouched.
+
+### Commit 1 — Fixes 1 & 2
+- Fix 1 (raw graph-hash uniqueness): `data/conditioned_graph_task.py` now hashes each
+  adjacency with `canonical_raw_graph_hash` (float32/contiguous/CPU canonicalisation,
+  documented) and uses the RAW hash with NO role prefix as the uniqueness key across
+  A/R0/R1 and supplied `existing_hashes`; returned set has exactly 3N raw hashes; role
+  lineage kept as metadata only; bounded failure (MAX_ATTEMPTS_PER_GRAPH=200_000) raises
+  a clear RuntimeError instead of looping forever. Task labels, balancing, constraints,
+  and split seeds unchanged.
+- Fix 2 (selector-independent dual diagnostic): `LatentDualRelationSwarm` rebuilt — Core B
+  receives ONLY x_B and the fixed union-graph mask (16 tokens, no COMM register, no
+  message embedding); r0/r1 candidates are bit-identical under flip/forced-message
+  interventions (unit-tested); selection happens strictly after both candidates exist;
+  dead msg_embedder/learned_comm_token removed -> exact dual param count now 279,691
+  (primary unchanged at 279,561). Loss wiring factored into testable `compute_loss`;
+  dual heads supervised with their OWN relation labels (never Y); msg BCE is the sender
+  gradient path (documented: the discrete selection is not differentiated).
+- New/updated tests in test_phase2c.py: raw-hash uniqueness across roles/splits, dtype/
+  layout-invariant canonical hashing, deterministic repeat-rejection fixture, bounded
+  exhaustion, dual selector-independence + trace bit-identity, parameter counts, dual +
+  primary loss wiring with swap checks. Combined suite: 38 passed. Two test-fixture bugs
+  found and fixed during development (a nondeterministic-distinctness fixture that could
+  never terminate; an off-by-one proposal-count assertion).

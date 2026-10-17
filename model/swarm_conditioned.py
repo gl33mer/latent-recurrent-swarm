@@ -6,9 +6,9 @@ sending one binary selector m in {-1, +1} (STE). Core B is a v7.1 reasoner whose
 accepts 64-dim inputs: [adj_union(16), adj_R0(16), adj_R1(16), one_hot(16)]. Core B runs
 over a 17-token sequence (16 graph nodes + one read-only COMM register at index 16) with
 the same one-way mask rules as Phase 2b (`model/swarm_comm.py`): graph queries may read
-the COMM key per the visibility schedule; the COMM query attends only to itself; the
-graph-to-graph mask uses the union adjacency and is independent of the message. The task
-readout is Core B's existing terminal decoder applied to z_B[15] ONLY — no message
+the COMM key per the visibility schedule; the COMM query attends only to itself;
+the graph-to-graph mask uses the union adjacency and is independent of the message. The
+task readout is Core B's existing terminal decoder applied to z_B[15] ONLY — no message
 tensor, message embedding, or COMM state reaches the head.
 
 Warm-start mapping (documented transfer, NOT an exact checkpoint load):
@@ -20,12 +20,25 @@ the new relation channels (16:48) start at exactly zero, and Phase 1 node-ID col
 new encoder reproduces the Phase 1 encoder output on equivalent union/ID inputs
 (unit-tested).
 
-`LatentDualRelationSwarm` (explicit diagnostic, isolated from the primary comparison):
-same Core B backbone and input representation (including the COMM register), but two
-terminal binary heads supervised separately for r0 and r1; at evaluation the one-bit
-selector chooses between the two candidate predictions only AFTER both are produced. The
-unused Phase 1-style decoder is replaced by nn.Identity() so no trainable parameter is
-dead. It never uses training labels at inference.
+`LatentDualRelationSwarm` (explicit diagnostic; corrected by the 2026-10-17 fix-only
+pass — see reports/phase2c-fix-only-report.md): a genuine compute-both-then-select
+late-selection control. Core B receives ONLY x_B and the fixed union-graph attention
+mask: its entire recurrent trajectory is independent of m, force_message, flip_message
+and the COMM visibility schedule, because this diagnostic has NO COMM register and NO
+message embedding at all. It produces two candidate outputs r0_logits and r1_logits from
+that selector-independent representation, and only afterwards uses the transmitted bit to
+select between them (never using labels at inference). The Phase 1-style decoder is
+replaced by nn.Identity() (no dead parameters), and the unused msg_embedder and learned
+COMM token are NOT instantiated here (no unused trainable parameters); msg_encoder is
+retained because the learned selector bit and its BCE supervision require it. Shared
+low-level helpers (union-mask construction, Core A runner, message binariser, warm-start
+mapping) are used by both models; the selector independence of the dual path is explicit
+and unit-tested.
+
+Parameter counts (d_input_B=64, verified programmatically and unit-asserted):
+- LatentConditionedSwarm: 137,476 + 141,572 + 129 + 256 + 128 = 279,561.
+- LatentDualRelationSwarm: 137,476 + 141,058 (Core B without decoder) + 129
+  + 2*514 (r0/r1 heads) = 279,691 (no msg_embedder, no COMM token).
 """
 import torch
 import torch.nn as nn
@@ -35,8 +48,11 @@ from model.core import LatentReasoner, binarize_ste
 from model.swarm_comm import COMM_MODES, comm_step_mask
 
 
-class _CommSwarmBase(nn.Module):
-    """Shared Core A / channel / COMM-mask machinery for Phase 2c models."""
+class _ConditionedBase(nn.Module):
+    """Shared, selector-independent machinery: cores, message channel interface,
+    union-graph mask construction, Core A runner, STE message binariser and the
+    documented Phase 1 warm-start mapping. COMM-specific state lives only in the
+    primary model."""
 
     def __init__(self, d_input_B: int, d_model: int = 128):
         super().__init__()
@@ -45,30 +61,15 @@ class _CommSwarmBase(nn.Module):
         self.core_A = LatentReasoner(num_nodes=16, d_input=32, d_model=d_model, d_output=2)
         self.core_B = LatentReasoner(num_nodes=16, d_input=d_input_B, d_model=d_model, d_output=2)
         self.msg_encoder = nn.Linear(d_model, 1)
-        self.msg_embedder = nn.Linear(1, d_model)
-        self.learned_comm_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
 
-    # Same one-way 17-token masks as Phase 2b; adj_union is input columns 0:16.
-    def build_comm_masks(self, x_B: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def build_union_mask(self, x_B: torch.Tensor) -> torch.Tensor:
+        """Graph-only attention mask over the 16 node tokens: query j may attend key i
+        iff i == j or edge i -> j exists in the UNION adjacency (input columns 0:16).
+        Independent of the message by construction (it never sees one)."""
         adj = x_B[:, :, :self.num_nodes]
-        B = x_B.size(0)
-        S = self.num_nodes + 1
         eye = torch.eye(self.num_nodes, dtype=torch.bool, device=x_B.device).unsqueeze(0)
         graph_graph = (adj.transpose(-1, -2) > 0.5) | eye
-        mask_off = torch.zeros(B, S, S, dtype=torch.bool, device=x_B.device)
-        mask_off[:, :self.num_nodes, :self.num_nodes] = graph_graph
-        mask_off[:, self.num_nodes, self.num_nodes] = True
-        mask_on = mask_off.clone()
-        mask_on[:, :self.num_nodes, self.num_nodes] = True
-        return mask_off.unsqueeze(1), mask_on.unsqueeze(1)
-
-    def build_comm_state(self, m: torch.Tensor, batch_size: int,
-                         zero_message: bool = False) -> torch.Tensor:
-        if zero_message:
-            msg_repr = torch.zeros(batch_size, self.d_model, dtype=m.dtype, device=m.device)
-        else:
-            msg_repr = self.msg_embedder(m)
-        return self.learned_comm_token.expand(batch_size, 1, self.d_model) + msg_repr.unsqueeze(1)
+        return graph_graph.unsqueeze(1)  # [B, 1, 16, 16]
 
     def _run_core_A(self, x_A, steps_A):
         mask_A = self.core_A.build_attention_mask(x_A)
@@ -88,21 +89,6 @@ class _CommSwarmBase(nn.Module):
                 raise ValueError("force_message must be None, -1.0 or +1.0")
             m = torch.full_like(m, force_message)
         return m
-
-    def _run_core_B(self, x_B, m, steps_B, comm_mode, zero_message, trace):
-        mask_off, mask_on = self.build_comm_masks(x_B)
-        comm_state = self.build_comm_state(m, x_B.size(0), zero_message=zero_message)
-        zB = torch.cat([self.core_B.encoder(x_B), comm_state], dim=1)
-        traces: Optional[List[torch.Tensor]] = [] if trace else None
-        if trace:
-            traces.append(zB[:, :self.num_nodes, :].detach().clone())
-        for step in range(steps_B):
-            step_mask = comm_step_mask(comm_mode, step, steps_B, mask_off, mask_on)
-            zB = self.core_B.step(zB, step_mask)
-            if trace:
-                traces.append(zB[:, :self.num_nodes, :].detach().clone())
-        terminal = zB[:, self.num_nodes - 1, :]
-        return terminal, traces
 
     def load_phase1_warm_start(self, phase1_state: dict) -> None:
         """Documented transfer. Core A: strict load. Core B: shape-compatible transfer
@@ -128,13 +114,39 @@ class _CommSwarmBase(nn.Module):
         self.core_B.load_state_dict(mapped)      # strict: all keys, shapes verified
 
 
-class LatentConditionedSwarm(_CommSwarmBase):
+class LatentConditionedSwarm(_ConditionedBase):
     """Primary Phase 2c model. Task head = Core B's terminal decoder on z_B[15].
     Parameters (d_input_B=64): 137,476 + 141,572 + 129 + 256 + 128 = 279,561."""
 
     def __init__(self, num_nodes: int = 16, d_input_A: int = 32, d_input_B: int = 64,
                  d_model: int = 128):
         super().__init__(d_input_B=d_input_B, d_model=d_model)
+        self.msg_embedder = nn.Linear(1, d_model)   # 256 parameters.
+        self.learned_comm_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)  # 128.
+
+    # One-way 17-token COMM masks (Phase 2b semantics) built on the shared union mask.
+    def build_comm_masks(self, x_B: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        B = x_B.size(0)
+        S = self.num_nodes + 1
+        union = self.build_union_mask(x_B)  # [B, 1, 16, 16]
+        mask_off = torch.zeros(B, 1, S, S, dtype=torch.bool, device=x_B.device)
+        mask_off[:, :, :self.num_nodes, :self.num_nodes] = union
+        mask_off[:, :, self.num_nodes, self.num_nodes] = True  # COMM self-loop only.
+        mask_on = mask_off.clone()
+        mask_on[:, :, :self.num_nodes, self.num_nodes] = True  # graph queries may read COMM.
+        return mask_off, mask_on
+
+    def build_comm_state(self, m: torch.Tensor, batch_size: int,
+                         zero_message: bool = False) -> torch.Tensor:
+        """COMM register initial state: learned token + embedded message. With
+        zero_message=True the information-bearing message contribution is replaced by an
+        exact zero before the addition (the msg_embedder — including its bias — is
+        bypassed); the constant learned COMM token remains."""
+        if zero_message:
+            msg_repr = torch.zeros(batch_size, self.d_model, dtype=m.dtype, device=m.device)
+        else:
+            msg_repr = self.msg_embedder(m)
+        return self.learned_comm_token.expand(batch_size, 1, self.d_model) + msg_repr.unsqueeze(1)
 
     def forward(self, x_A, x_B, steps_A: int = 8, steps_B: int = 8,
                 flip_message: bool = False, zero_message: bool = False,
@@ -144,18 +156,38 @@ class LatentConditionedSwarm(_CommSwarmBase):
             raise ValueError(f"Unknown comm_mode: {comm_mode!r}; expected one of {COMM_MODES}")
         aux_logits_A, raw_m = self._run_core_A(x_A, steps_A)
         m = self._message(raw_m, flip_message, force_message)
-        terminal, traces = self._run_core_B(x_B, m, steps_B, comm_mode, zero_message, trace)
+
+        mask_off, mask_on = self.build_comm_masks(x_B)
+        comm_state = self.build_comm_state(m, x_B.size(0), zero_message=zero_message)
+        zB = torch.cat([self.core_B.encoder(x_B), comm_state], dim=1)  # [B, 17, d_model]
+
+        traces: Optional[List[torch.Tensor]] = [] if trace else None
+        if trace:
+            traces.append(zB[:, :self.num_nodes, :].detach().clone())
+        for step in range(steps_B):
+            step_mask = comm_step_mask(comm_mode, step, steps_B, mask_off, mask_on)
+            zB = self.core_B.step(zB, step_mask)
+            if trace:
+                traces.append(zB[:, :self.num_nodes, :].detach().clone())
+
+        # Terminal graph-node readout: explicit index 15 (token 16 is the COMM register).
+        terminal = zB[:, self.num_nodes - 1, :]
         task_logits = self.core_B.decoder(terminal)  # [batch, 2] from z_B[15] only.
         if trace:
             return task_logits, raw_m, aux_logits_A, m, traces
         return task_logits, raw_m, aux_logits_A, m
 
 
-class LatentDualRelationSwarm(_CommSwarmBase):
-    """Compute-both-then-select diagnostic. Two terminal heads supervised separately for
-    r0 and r1; the selector is applied only after both predictions exist. The unused
-    Phase 1-style decoder is replaced by nn.Identity() (no dead parameters).
-    Parameters (d_input_B=64): 137,476 + 141,058 + 129 + 256 + 128 + 2*514 = 280,075."""
+class LatentDualRelationSwarm(_ConditionedBase):
+    """Compute-both-then-select diagnostic (selector-independent Core B).
+
+    Core B's recurrent trajectory depends ONLY on x_B and the fixed union-graph mask:
+    there is no COMM register and no message embedding in this model, so r0_logits and
+    r1_logits are bit-identical under any message intervention. The transmitted bit is
+    used exclusively by `select` AFTER both candidate outputs exist (never using labels).
+    comm_mode and zero_message are accepted for interface compatibility and documented
+    as no-ops here (there is no COMM schedule and no message contribution to ablate).
+    Parameters (d_input_B=64): 137,476 + 141,058 + 129 + 2*514 = 279,691."""
 
     def __init__(self, num_nodes: int = 16, d_input_A: int = 32, d_input_B: int = 64,
                  d_model: int = 128):
@@ -168,12 +200,22 @@ class LatentDualRelationSwarm(_CommSwarmBase):
                 flip_message: bool = False, zero_message: bool = False,
                 comm_mode: str = "full", trace: bool = False,
                 force_message: Optional[float] = None):
-        if comm_mode not in COMM_MODES:
-            raise ValueError(f"Unknown comm_mode: {comm_mode!r}; expected one of {COMM_MODES}")
         aux_logits_A, raw_m = self._run_core_A(x_A, steps_A)
-        m = self._message(raw_m, flip_message, force_message)
-        terminal, traces = self._run_core_B(x_B, m, steps_B, comm_mode, zero_message, trace)
-        r0_logits = self.r0_head(terminal)  # per-relation heads: each sees z_B[15] only.
+        m = self._message(raw_m, flip_message, force_message)  # selection input only.
+
+        # Selector-independent Core B: 16 graph tokens, fixed union mask, no COMM.
+        union_mask = self.build_union_mask(x_B)
+        zB = self.core_B.encoder(x_B)
+        traces: Optional[List[torch.Tensor]] = [] if trace else None
+        if trace:
+            traces.append(zB.detach().clone())
+        for _ in range(steps_B):
+            zB = self.core_B.step(zB, union_mask)
+            if trace:
+                traces.append(zB.detach().clone())
+
+        terminal = zB[:, self.num_nodes - 1, :]
+        r0_logits = self.r0_head(terminal)  # each head sees z_B[15] only.
         r1_logits = self.r1_head(terminal)
         if trace:
             return r0_logits, r1_logits, raw_m, aux_logits_A, m, traces

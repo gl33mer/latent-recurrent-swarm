@@ -16,8 +16,13 @@ Generation contract (predeclared in reports/phase2c-design.md):
   constraints (Node 0 out-degree >= 1, Node 15 in-degree >= 1), reachable graphs have
   shortest path length in [5, 8], unreachable graphs have no 0 -> 15 path;
 - Graph A uses the same sampler with label b_A;
-- every individual graph (A, R0, R1) is SHA-256 hashed in a namespaced way; no graph
-  recurs within a split or across splits;
+- **raw structural graph uniqueness** (amended by the 2026-10-17 fix-only pass, see
+  reports/phase2c-fix-only-report.md): every individual graph (A, R0, R1) is hashed by
+  its canonical raw SHA-256 with NO role prefix; a raw hash is rejected if it has already
+  appeared in the current dataset under any role or in any role of a supplied
+  `existing_hashes` set from a prior split. The returned set contains exactly
+  `3 * num_samples` raw hashes for a valid split. Role lineage (A/R0/R1) is tracking
+  metadata only and is never part of the uniqueness key;
 - x_B layout (64 features per node): [adj_union(16), adj_R0(16), adj_R1(16),
   one_hot_node_id(16)], where adj_union is the logical OR of the two relation matrices;
   x_A remains the v7.1 layout [adj_A(16), one_hot(16)].
@@ -32,6 +37,18 @@ from torch.utils.data import TensorDataset
 from data.graph_task import _sample_matched_dag
 
 SPLIT_SEEDS = {"train": 4201, "validation": 13371, "test": 99991}
+
+MAX_ATTEMPTS_PER_GRAPH = 200_000  # bounded failure if the sampler cannot satisfy uniqueness
+
+
+def canonical_raw_graph_hash(adj: torch.Tensor) -> str:
+    """Canonical raw structural SHA-256 of an adjacency matrix (no role prefix).
+
+    Canonicalisation: values are cast to float32, moved to CPU and made contiguous before
+    hashing, so equivalent binary adjacency matrices cannot produce different hashes
+    because of dtype or storage layout. Entries are 0.0/1.0 as produced by the sampler."""
+    canon = adj.detach().to(dtype=torch.float32).contiguous().cpu()
+    return hashlib.sha256(canon.numpy().tobytes()).hexdigest()
 
 
 def generate_conditioned_benchmark(
@@ -54,13 +71,20 @@ def generate_conditioned_benchmark(
     for b_A, r0, r1 in combos:
         graphs = {}
         for slot, reach in (("A", b_A), ("R0", r0), ("R1", r1)):
-            while True:
-                adj, h = _sample_matched_dag(num_nodes, bool(reach), rng)
-                namespaced = f"{slot}:{h}"
-                if namespaced not in seen and namespaced not in generated:
-                    generated.add(namespaced)
+            # Raw structural uniqueness: the role is NOT part of the key. A graph that
+            # already appeared (under any role, in this split or a prior one) is rejected.
+            for _attempt in range(MAX_ATTEMPTS_PER_GRAPH):
+                adj, _ = _sample_matched_dag(num_nodes, bool(reach), rng)
+                raw_h = canonical_raw_graph_hash(adj)
+                if raw_h not in seen and raw_h not in generated:
+                    generated.add(raw_h)
                     graphs[slot] = adj
                     break
+            else:
+                raise RuntimeError(
+                    f"Could not sample a structurally unique graph for role {slot} after "
+                    f"{MAX_ATTEMPTS_PER_GRAPH} attempts; the requested task is too large "
+                    f"for the 16-node forward-DAG sampler.")
 
         adj_A, adj_R0, adj_R1 = graphs["A"], graphs["R0"], graphs["R1"]
         adj_union = ((adj_R0 > 0.5) | (adj_R1 > 0.5)).float()
