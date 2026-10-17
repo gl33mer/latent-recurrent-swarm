@@ -92,3 +92,20 @@ semantics, gates, or v7.1/Phase 2b code paths.
 LR qualifies (full-mode passes 0/3, 1/3, 1/3 at 8e-4/4e-4/2e-4; final-only 1/3, 0/3, 2/3),
 so the Phase 2b recipe is classified NOT YET STABILISED. Phase 2c will be implemented and
 smoke-tested only; no confirmatory comparison. See reports/phase2b-stability-report.md.
+
+## 2026-10-17 — reconciliation, fix revalidation, and message-supervision weight study (branch experiment/phase2b-msg-supervision-weight-study)
+
+Stage A: remote/local refs reconciled (Phase 2c branch tip 744e871 contains all fix commits
+as ancestors; GitHub API blob SHAs match local Git objects — the externally reported mixed
+views were stale branch-name caching). Stage B: Phase 2c fixes revalidated on their branch
+(47/47 tests; 4 smoke configs; no test data). Stage C: stability-report addendum —
+corrected median instabilities (12.61/11.99/4.68% for 8e-4/4e-4/2e-4; previously
+misreported single-run values), clarified the failed-run checkpoint deviation (original 6
+Phase 2b runs post-gate-only; the 18-run sweep complied), and an evidence-based
+sender-probe diagnosis (late-training collapses with message-BCE spikes). Stage D: new
+predeclared one-factor study (design a6eb669 committed before any run): λ_msg ∈
+{0.5,1.0,2.0} × modes × seeds 42-44 at frozen lr 2e-4; 18/18 runs in 44.6 min; **λ_msg=2.0
+eligible: 6/6 all-gate passes, probe ≥99.5%, median instability 2.47%**. A test-caught
+aggregator bug (int64 "overall" mask) was fixed before any sweep run (5a28a2a). No Phase 2c
+training, no Phase 2c test split generation, no Phase 2c evaluation. Status:
+CANDIDATE RECIPE SCREENED IN — awaiting owner review.

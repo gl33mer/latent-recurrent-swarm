@@ -318,3 +318,25 @@ log/env snapshot; artifact save gated behind validation gates:
   independent to 3.7e-9 on the frozen model (an earlier apparent 2.3 divergence was a
   broadcasting mistake in a debug script, not a model property).
 - Combined suite on this branch: 25 passed (7 v7.1 + 11 frozen Phase 2b + 7 study).
+
+## Stages A-D complete (charter: latent_recurrent_swarm_next_batch_reconciliation_and_stability_prompt.md @ main 5e90c4a)
+
+- A: refs/ancestry verified (all fix commits ancestors of remote phase2c tip 744e871; gh api
+  blob SHAs match for all five key files -> stale public-view caching, no repair needed);
+  artifacts verified (phase1 ef4514…, 2b checkpoints 38c505…/79aada…); evidence in
+  runs/20261017T064612Z_stageA_reconciliation/ (approx; see runs listing).
+- B: on the phase2c branch: 47/47 tests; smoke all four configs pass (values identical to
+  the fix-only smoke — deterministic); no test split generated (99991 appears only in a
+  docstring; zero SPLIT_SEEDS["test"] references in the trainer).
+- C: C1 medians recomputed from raw histories (12.61/11.99/4.68% — report's values were
+  single runs); C2 sweep complied 18/18 with last.pt, original 6 runs deviated (4 failed
+  runs have no checkpoints; not recreated); C3 probe-failure diagnosis: late-training
+  collapses, msg BCE spikes, gradient spikes; not a metric bug.
+- D: branch from ed46cd4; design a6eb669 committed pre-registration; runner+tests
+  6d12304; test-caught int64 overall-mask bug fixed 5a28a2a before any sweep outcome;
+  smoke (separate run ID) verified checkpoint policy and trajectory semantics;
+  18-run grid 44.6 min, all cells completed; selection rule applied mechanically ->
+  **λ_msg=2.0 eligible (6/6 passes; λ=1.0 also eligible at 4/6 but dominated)**;
+  paired init verified (1 checksum per seed across 6 cells); zero collapses/non-finite at
+  λ=2.0. Report + stability addendum committed 4cea558. Final status:
+  CANDIDATE RECIPE SCREENED IN — stopped for owner review; no Phase 2c training/data/eval.

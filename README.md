@@ -42,3 +42,14 @@ Training scripts seed Python and PyTorch and limit PyTorch intra-op threading to
 ## Acceptance criteria
 
 See `PROJECT_SPEC.md`. A system-test pass does not imply a training gate has passed. Do not tune on the held-out test set.
+
+## Stability and recipe studies (Phase 2b; no Phase 2c claims)
+
+- Phase 2b stability study (18 instrumented runs, no eligible LR at the time):
+  `reports/phase2b-stability-design.md`, `reports/phase2b-stability-report.md` (+ dated addendum).
+- Message-supervision weight study (predeclared one-factor sweep; **λ_msg = 2.0 at lr 2e-4
+  passed all frozen Phase 2b validation gates in 6/6 runs — a screened candidate recipe
+  awaiting owner review**): `reports/phase2b-msg-weight-study-design.md`,
+  `reports/phase2b-msg-weight-study-report.md`.
+- Phase 2c remains **not confirmatorily trained**; its test split is unused and its
+  evaluator uninvoked. See the Phase 2c branch for its engineering status.
